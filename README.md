@@ -80,14 +80,25 @@ forge script script/Deploy.s.sol \
 After deployment, the admin grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to the
 intended operator addresses with `grantRole`.
 
-## Nethereum code generation (.NET)
+## .NET / Nethereum code generation
 
-Pre-extracted artifacts for [Nethereum.Generator](https://github.com/Nethereum/Nethereum.Generator.Console) live in [`abi/`](./abi):
+Pre-extracted artifacts in [`abi/`](./abi):
 
-- `abi/StrandsCustodyToken.abi` — raw ABI JSON array
-- `abi/StrandsCustodyToken.bin` — creation bytecode (hex, no `0x` prefix)
+| File | Format | Use with |
+| --- | --- | --- |
+| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
+| `abi/StrandsCustodyToken.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
+| `abi/StrandsCustodyToken.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 
-Generate the C# service / DTOs:
+### Strands ContractInterfaceGenerator
+
+Drop `abi/StrandsCustodyToken.json` into the directory the generator scans
+(e.g. `Sources/Strands/StrandsCustodyToken/StrandsCustodyToken.json`) and run
+the CIG normally. If/when the contract is deployed, add a sibling
+`StrandsCustodyToken-deployments.json` of shape `{"<chainId>": "0x<address>"}`
+to have the deployment class generated too.
+
+### Plain Nethereum.Generator.Console
 
 ```bash
 dotnet tool install -g Nethereum.Generator.Console
@@ -99,12 +110,22 @@ Nethereum.Generator.Console generate from-abi \
   -cn  StrandsCustodyToken
 ```
 
-To regenerate the artifacts after a contract change:
+### Regenerating after a contract change
 
 ```bash
 forge build
 forge inspect StrandsCustodyToken abi --json > abi/StrandsCustodyToken.abi
 forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > abi/StrandsCustodyToken.bin
+python3 - <<'PY'
+import json
+abi = json.load(open("abi/StrandsCustodyToken.abi"))
+json.dump({
+    "_format": "hh-sol-artifact-1",
+    "contractName": "StrandsCustodyToken",
+    "sourceName":   "src/StrandsCustodyToken.sol",
+    "abi": abi,
+}, open("abi/StrandsCustodyToken.json", "w"), indent=2)
+PY
 ```
 
 ## License
