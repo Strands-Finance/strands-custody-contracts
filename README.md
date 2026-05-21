@@ -80,6 +80,33 @@ forge script script/Deploy.s.sol \
 After deployment, the admin grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to the
 intended operator addresses with `grantRole`.
 
+## Nethereum code generation (.NET)
+
+Pre-extracted artifacts for [Nethereum.Generator](https://github.com/Nethereum/Nethereum.Generator.Console) live in [`abi/`](./abi):
+
+- `abi/StrandsCustodyToken.abi` — raw ABI JSON array
+- `abi/StrandsCustodyToken.bin` — creation bytecode (hex, no `0x` prefix)
+
+Generate the C# service / DTOs:
+
+```bash
+dotnet tool install -g Nethereum.Generator.Console
+Nethereum.Generator.Console generate from-abi \
+  -abi abi/StrandsCustodyToken.abi \
+  -bin abi/StrandsCustodyToken.bin \
+  -o   ./StrandsCustody.Contracts \
+  -ns  StrandsCustody.Contracts \
+  -cn  StrandsCustodyToken
+```
+
+To regenerate the artifacts after a contract change:
+
+```bash
+forge build
+forge inspect StrandsCustodyToken abi --json > abi/StrandsCustodyToken.abi
+forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > abi/StrandsCustodyToken.bin
+```
+
 ## License
 
 MIT
