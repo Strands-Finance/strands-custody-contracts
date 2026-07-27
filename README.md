@@ -13,20 +13,25 @@ from any holder **without prior allowance**. This is the on-chain hook that lets
 Strands keep total supply consistent with an off-chain ledger when claims are
 redeemed.
 
+Holder-to-holder transfers are **default-deny**: a holder can only `transfer` /
+`transferFrom` to destinations the admin has approved for that specific holder
+via `setDestinationAllowed`. Mint and burn paths (`mint`, `burn`, `burnFrom`,
+`custodyBurn`) are exempt from this restriction.
+
 ## Token
 
 | Field | Value |
 | --- | --- |
 | Name | `Strands Custody Token` |
 | Symbol | `SCT` |
-| Decimals | `18` |
+| Decimals | Set at deploy time via the `decimals_` constructor argument (e.g. USDC = 6, BTC = 8, ETH = 18) |
 | Initial supply | `0` (mint via `MINTER_ROLE`) |
 
 ## Roles
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role; manage the per-holder transfer destination allowlist (`setDestinationAllowed`) |
 | `MINTER_ROLE` | Call `mint(to, amount)` |
 | `CUSTODIAN_ROLE` | Call `custodyBurn(from, amount)` — bypasses allowance |
 
@@ -39,11 +44,19 @@ multisigs / timelocks) should hold them.
 ```solidity
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
 function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE
+function setDestinationAllowed(address holder, address destination, bool allowed) external; // DEFAULT_ADMIN_ROLE
+function allowedDestination(address holder, address destination) external view returns (bool);
 
 event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
+event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
+
+error TransferDestinationNotAllowed(address holder, address destination);
 ```
 
-Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited unchanged.
+Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with
+one behavioral change: `transfer` and `transferFrom` revert with
+`TransferDestinationNotAllowed` unless `allowedDestination[holder][destination]`
+is true (keyed by the token owner, not the spender).
 
 ## Security
 
@@ -53,6 +66,16 @@ balance. In production:
 - Hold `DEFAULT_ADMIN_ROLE` in a timelock-controlled multisig.
 - Hold `CUSTODIAN_ROLE` in a multisig with operational signers only.
 - Do not grant `CUSTODIAN_ROLE` to EOAs in production.
+
+The transfer allowlist adds further considerations:
+
+- Transfers are **default-deny** — a holder cannot move tokens at all until the
+  admin approves at least one destination for them (self-transfers included).
+  Deployment runbooks must seed the allowlist before enabling user flows.
+- The admin effectively holds transfer-censorship power over every holder.
+- If `DEFAULT_ADMIN_ROLE` is fully renounced, the allowlist is frozen forever:
+  unapproved balances become permanently non-transferable (burn paths keep
+  working while the respective roles are held).
 
 ## Build & test
 

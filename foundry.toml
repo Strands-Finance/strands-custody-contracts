@@ -11,6 +11,11 @@ via_ir = false
 fuzz = { runs = 256 }
 gas_reports = ["StrandsCustodyToken"]
 
+[lint]
+# OZ ERC20 reverts on failure instead of returning false, so unchecked
+# transfer/transferFrom calls in tests are intentional.
+exclude_lints = ["erc20-unchecked-transfer"]
+
 [fmt]
 line_length = 120
 tab_width = 4

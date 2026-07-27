@@ -11,6 +11,8 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
 ///         using the standard `burn` / `burnFrom`. Accounts holding
 ///         CUSTODIAN_ROLE may additionally call `custodyBurn` to destroy
 ///         tokens from any holder without requiring prior allowance.
+///         Holder-to-holder transfers are default-deny: a holder may only
+///         transfer to destinations the admin has approved for that holder.
 contract StrandsCustodyToken is ERC20Burnable, AccessControl {
     bytes32 public constant CUSTODIAN_ROLE = keccak256("CUSTODIAN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
@@ -19,9 +21,21 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
     ///         asset's native base unit (e.g. USDC = 6, BTC = 8, ETH = 18).
     uint8 private immutable _decimals;
 
+    /// @notice allowedDestination[holder][destination] is true when `holder`
+    ///         may transfer tokens to `destination`.
+    mapping(address holder => mapping(address destination => bool)) public allowedDestination;
+
     /// @notice Emitted when a custodian burns tokens from a holder
     ///         without using the ERC20 allowance flow.
     event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
+
+    /// @notice Emitted when the admin allows or disallows a transfer
+    ///         destination for a holder.
+    event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
+
+    /// @notice Thrown when `holder` attempts a transfer to a `destination`
+    ///         the admin has not approved for them.
+    error TransferDestinationNotAllowed(address holder, address destination);
 
     /// @param admin     Address that will receive DEFAULT_ADMIN_ROLE.
     /// @param decimals_ Native decimals of the custodied asset; returned by `decimals()`.
@@ -47,5 +61,26 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
     function custodyBurn(address from, uint256 amount) external onlyRole(CUSTODIAN_ROLE) {
         _burn(from, amount);
         emit CustodyBurn(msg.sender, from, amount);
+    }
+
+    /// @notice Allow or disallow `holder` to transfer tokens to `destination`.
+    ///         Restricted to DEFAULT_ADMIN_ROLE.
+    function setDestinationAllowed(address holder, address destination, bool allowed)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        allowedDestination[holder][destination] = allowed;
+        emit DestinationAllowedSet(holder, destination, allowed);
+    }
+
+    /// @dev Enforce the per-holder destination allowlist on holder-to-holder
+    ///      transfers only. Mints (`from == 0`) and burns (`to == 0`) bypass
+    ///      the check, keeping `mint` / `burn` / `burnFrom` / `custodyBurn`
+    ///      unrestricted.
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && to != address(0) && !allowedDestination[from][to]) {
+            revert TransferDestinationNotAllowed(from, to);
+        }
+        super._update(from, to, value);
     }
 }
