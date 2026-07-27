@@ -48,7 +48,7 @@ contract SubaccountLifecycleTest is BaseTest {
     ///      both ways, and only between those two addresses.
     function test_Step5to6_LinkThenTransferBothWays() public {
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
+        token.setPairs(_edges(alice, bob), true);
         assertTrue(token.isLinked(alice, bob));
 
         vm.prank(alice);
@@ -73,8 +73,8 @@ contract SubaccountLifecycleTest is BaseTest {
     /// @dev Step 7. Unlinking closes the same edge set the link opened.
     function test_Step7_RevokeClosesTheRouteAgain() public {
         vm.startPrank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
-        token.linkSubaccounts(_edges(alice, bob), true, false);
+        token.setPairs(_edges(alice, bob), true);
+        token.setPairs(_edges(alice, bob), false);
         vm.stopPrank();
 
         assertFalse(token.isLinked(alice, bob));
@@ -94,7 +94,7 @@ contract SubaccountLifecycleTest is BaseTest {
 
         // one transaction links the subaccount
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
+        token.setPairs(_edges(alice, bob), true);
 
         // value flows both ways
         vm.prank(alice);
@@ -121,7 +121,7 @@ contract SubaccountLifecycleTest is BaseTest {
 
         // offboarding closes the link
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, false);
+        token.setPairs(_edges(alice, bob), false);
         assertFalse(token.isLinked(alice, bob));
     }
 
@@ -133,9 +133,9 @@ contract SubaccountLifecycleTest is BaseTest {
 
         vm.recordLogs();
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob, carol, minter), true, true);
+        token.setPairs(_edges(alice, bob, carol, minter), true);
 
-        assertEq(vm.getRecordedLogs().length, 6, "2 links x 3 edges each");
+        assertEq(vm.getRecordedLogs().length, 4, "2 links x 2 edges each");
         assertTrue(token.isLinked(alice, bob));
         assertTrue(token.isLinked(carol, minter));
 

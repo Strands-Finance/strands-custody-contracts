@@ -34,7 +34,7 @@ allowlist — including one-transaction subaccount linking — come from
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role; manage the per-holder transfer destination allowlist (`setDestinationAllowed`) |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role; manage the per-holder transfer destination allowlist (`setDestinationAllowed` and every [batch helper](#batch-helpers)) |
 | `MINTER_ROLE` | Call `mint(to, amount)` |
 | `CUSTODIAN_ROLE` | Call `custodyBurn(from, amount)` — bypasses allowance |
 
@@ -73,8 +73,7 @@ struct Edge { address holder; address destination; }
 
 function setDestinations(Edge[] calldata edges, bool allowed) external;
 function setDestinationsMixed(Edge[] calldata edges, bool[] calldata allowed) external;
-function setPairs(Edge[] calldata pairs, bool allowed) external;          // both directions
-function linkSubaccounts(Edge[] calldata pairs, bool selfEdge, bool allowed) external;
+function setPairs(Edge[] calldata pairs, bool allowed) external;          // both directions — links a subaccount
 function setDestinationsForHolder(address holder, address[] calldata destinations, bool allowed) external;
 function setHoldersForDestination(address[] calldata holders, address destination, bool allowed) external;
 
@@ -84,7 +83,14 @@ function isLinked(address user, address sub) external view returns (bool); // bo
 error ArrayLengthMismatch(uint256 edgesLength, uint256 flagsLength);
 ```
 
-Two behaviors worth knowing:
+Three behaviors worth knowing:
+
+- **Writes are `DEFAULT_ADMIN_ROLE`, with no exceptions.** Every entrypoint
+  checks the role before doing anything, so an unprivileged caller is rejected
+  with the same `AccessControlUnauthorizedAccount` the single setter throws —
+  even when the batch would have written nothing. Holding `MINTER_ROLE` or
+  `CUSTODIAN_ROLE` is not a shortcut. The views are open by design, so
+  integrations can preflight without privileges.
 
 - **Batching is inherited, not a separate contract.** OZ's `onlyRole` checks
   `msg.sender`, never `tx.origin`, so a separately deployed helper would be the
@@ -126,9 +132,9 @@ cast send $TOKEN "mint(address,uint256)" $USER 1000ether \
 # 4. Route is closed until linked (expect false)
 cast call $TOKEN "isLinked(address,address)(bool)" $USER $SCW --rpc-url $RPC_URL
 
-# 5. Link N subaccounts — both directions plus self-edge — in ONE transaction
-cast send $TOKEN "linkSubaccounts((address,address)[],bool,bool)" \
-  "[($USER1,$SCW1),($USER2,$SCW2)]" true true \
+# 5. Link N subaccounts — both directions — in ONE transaction
+cast send $TOKEN "setPairs((address,address)[],bool)" \
+  "[($USER1,$SCW1),($USER2,$SCW2)]" true \
   --rpc-url $RPC_URL --private-key $ADMIN_PK
 
 # 6. User funds the subaccount
@@ -136,8 +142,8 @@ cast send $TOKEN "transfer(address,uint256)" $SCW 100ether \
   --rpc-url $RPC_URL --private-key $USER_PK
 
 # 7. Offboard — same call, allowed=false
-cast send $TOKEN "linkSubaccounts((address,address)[],bool,bool)" \
-  "[($USER1,$SCW1)]" true false \
+cast send $TOKEN "setPairs((address,address)[],bool)" \
+  "[($USER1,$SCW1)]" false \
   --rpc-url $RPC_URL --private-key $ADMIN_PK
 ```
 
@@ -151,8 +157,10 @@ cast send $TOKEN "linkSubaccounts((address,address)[],bool,bool)" \
   call) or edge count grows quadratically.
 - **Zero-value transfers revert**, unlike a plain ERC20. Probe a route with
   `isLinked` / `areAllowed`, never `transfer(dest, 0)`.
-- **Self-transfers revert** unless allowlisted — hence the `selfEdge` flag,
-  which matters for sweep patterns that transfer to `address(this)`.
+- **Self-transfers revert** unless allowlisted, and linking does NOT open a
+  self-route. `x -> x` is an ordinary edge that an admin must approve on
+  purpose via `setDestinations`; a contract that self-transfers without that
+  approval is meant to fail rather than be silently accommodated.
 - **Counterfactual CREATE2 wallets can be linked before deployment**, but the
   address derives from `(factory, initCodeHash, salt)`; change any of those and
   the approval points at an address nobody controls. Re-derive before seeding.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { BaseTest } from "../Base.t.sol";
 import { StrandsAllowlistBatch } from "../../src/StrandsAllowlistBatch.sol";
 
@@ -21,14 +22,13 @@ contract BatchAuthTest is BaseTest {
         token.setDestinations(_edges(alice, bob), true);
         token.setDestinationsMixed(_edges(alice, carol, bob, carol), _bools(true, true));
         token.setPairs(_edges(alice, minter), true);
-        token.linkSubaccounts(_edges(alice, custodian), true, true);
         token.setDestinationsForHolder(alice, _addrs(bob, carol), true);
         token.setHoldersForDestination(_addrs(bob, carol), alice, true);
         vm.stopPrank();
 
         assertTrue(token.allowedDestination(alice, bob));
         assertTrue(token.allowedDestination(alice, minter));
-        assertTrue(token.allowedDestination(alice, custodian));
+        assertTrue(token.allowedDestination(minter, alice));
         assertTrue(token.allowedDestination(bob, alice));
     }
 
@@ -45,9 +45,6 @@ contract BatchAuthTest is BaseTest {
 
         _expectNotAdmin(alice);
         token.setPairs(_edges(alice, bob), true);
-
-        _expectNotAdmin(alice);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
 
         _expectNotAdmin(alice);
         token.setDestinationsForHolder(alice, _addrs(bob), true);
@@ -120,6 +117,67 @@ contract BatchAuthTest is BaseTest {
         vm.prank(carol);
         token.setDestinations(_edges(alice, carol), true); // the surviving admin still can
         assertTrue(token.allowedDestination(alice, carol));
+    }
+
+    /// @dev Exhaustive gate check over an ARBITRARY caller, via low-level calls
+    ///      so every write entrypoint is covered uniformly. `caller` is fuzzed,
+    ///      so this asserts the gate for arbitrary addresses rather than for the
+    ///      handful of named actors in the fixture.
+    function testFuzz_ArbitraryNonAdmin_CannotCallAnyBatchWrite(address caller) public {
+        bytes32 role = token.DEFAULT_ADMIN_ROLE();
+        vm.assume(!token.hasRole(role, caller));
+
+        bytes[] memory calls = new bytes[](5);
+        calls[0] = abi.encodeCall(StrandsAllowlistBatch.setDestinations, (_edges(alice, bob), true));
+        calls[1] = abi.encodeCall(
+            StrandsAllowlistBatch.setDestinationsMixed, (_edges(alice, bob, alice, carol), _bools(true, true))
+        );
+        calls[2] = abi.encodeCall(StrandsAllowlistBatch.setPairs, (_edges(alice, bob), true));
+        calls[3] = abi.encodeCall(StrandsAllowlistBatch.setDestinationsForHolder, (alice, _addrs(bob, carol), true));
+        calls[4] = abi.encodeCall(StrandsAllowlistBatch.setHoldersForDestination, (_addrs(bob, carol), alice, true));
+
+        bytes memory expected =
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, caller, role);
+
+        for (uint256 i = 0; i < calls.length; ++i) {
+            vm.prank(caller);
+            (bool ok, bytes memory ret) = address(token).call(calls[i]);
+            assertFalse(ok, "an unprivileged caller reached a batch write");
+            assertEq(ret, expected, "wrong revert for a batch write");
+        }
+
+        // nothing leaked through any of the five attempts
+        assertFalse(token.allowedDestination(alice, bob));
+        assertFalse(token.allowedDestination(bob, alice));
+        assertFalse(token.allowedDestination(alice, carol));
+        assertFalse(token.allowedDestination(bob, alice));
+    }
+
+    /// @dev The read side is deliberately open — preflight must work for anyone,
+    ///      otherwise integrations are pushed back to probing with transfers.
+    function testFuzz_ArbitraryCaller_CanAlwaysReadViews(address caller) public {
+        vm.prank(admin);
+        token.setPairs(_edges(alice, bob), true);
+
+        vm.prank(caller);
+        assertTrue(token.isLinked(alice, bob));
+
+        vm.prank(caller);
+        bool[] memory out = token.areAllowed(_edges(alice, bob));
+        assertTrue(out[0]);
+    }
+
+    /// @dev Holding some other role is not a shortcut into the batch surface.
+    function test_MinterAndCustodian_CannotBatch() public {
+        vm.prank(minter);
+        _expectNotAdmin(minter);
+        token.setPairs(_edges(alice, bob), true);
+
+        vm.prank(custodian);
+        _expectNotAdmin(custodian);
+        token.setDestinations(_edges(alice, bob), true);
+
+        assertFalse(token.allowedDestination(alice, bob));
     }
 
     /// @dev Batch and single-setter paths must be indistinguishable to a caller

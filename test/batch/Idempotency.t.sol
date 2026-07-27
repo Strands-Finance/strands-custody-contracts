@@ -14,15 +14,14 @@ import { BaseTest } from "../Base.t.sol";
 contract IdempotencyTest is BaseTest {
     function test_ReRunningAppliedBatch_EmitsNothing() public {
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
+        token.setPairs(_edges(alice, bob), true);
 
         vm.recordLogs();
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
+        token.setPairs(_edges(alice, bob), true);
 
         assertEq(vm.getRecordedLogs().length, 0, "re-applied batch must be silent");
         assertTrue(token.isLinked(alice, bob), "state must be unchanged, not cleared");
-        assertTrue(token.allowedDestination(bob, bob));
     }
 
     function test_PartiallyAppliedBatch_EmitsOnlyTheMissingEdges() public {

@@ -166,19 +166,22 @@ contract AllowlistHandler is Test {
         if (allowed) _recordOpen(holder, destination);
     }
 
-    function linkSubaccount(uint256 userSeed, uint256 subSeed, bool selfEdge, bool allowed) external {
-        address user = _actor(userSeed);
-        address sub = _actor(subSeed);
+    /// @dev Batched multi-pair write, so the fuzzer exercises loops of more than
+    ///      one iteration alongside the single-pair `setPairs` action.
+    function setManyDestinations(uint256 aSeed, uint256 bSeed, uint256 cSeed, bool allowed) external {
+        address a = _actor(aSeed);
+        address b = _actor(bSeed);
+        address c = _actor(cSeed);
 
-        StrandsAllowlistBatch.Edge[] memory pairs = new StrandsAllowlistBatch.Edge[](1);
-        pairs[0] = StrandsAllowlistBatch.Edge(user, sub);
+        StrandsAllowlistBatch.Edge[] memory edges = new StrandsAllowlistBatch.Edge[](2);
+        edges[0] = StrandsAllowlistBatch.Edge(a, b);
+        edges[1] = StrandsAllowlistBatch.Edge(b, c);
         vm.prank(admin);
-        token.linkSubaccounts(pairs, selfEdge, allowed);
+        token.setDestinations(edges, allowed);
 
         if (allowed) {
-            _recordOpen(user, sub);
-            _recordOpen(sub, user);
-            if (selfEdge) _recordOpen(sub, sub);
+            _recordOpen(a, b);
+            _recordOpen(b, c);
         }
     }
 

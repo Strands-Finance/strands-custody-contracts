@@ -55,29 +55,18 @@ abstract contract StrandsAllowlistBatch {
         }
     }
 
-    /// @notice Open or close BOTH directions for each pair — 2 edges per pair.
+    /// @notice Open or close BOTH directions for each pair — exactly 2 edges per
+    ///         pair and nothing else. This is the subaccount-linking call:
+    ///         `holder` is the user's main address, `destination` the subaccount.
+    /// @dev    Self-edges are deliberately NOT written. A self-transfer is gated
+    ///         like every other route, so `x -> x` stays closed unless an admin
+    ///         approves it explicitly via `setDestinations`. Anything that
+    ///         self-transfers without that approval is meant to fail.
     function setPairs(Edge[] calldata pairs, bool allowed) external {
         _checkAllowlistAdmin();
         for (uint256 i = 0; i < pairs.length; ++i) {
             _setIfChanged(pairs[i].holder, pairs[i].destination, allowed);
             _setIfChanged(pairs[i].destination, pairs[i].holder, allowed);
-        }
-    }
-
-    /// @notice Link subaccounts: both directions, plus an optional self-edge on
-    ///         the subaccount. The self-edge matters because self-transfers are
-    ///         gated like any other route, and some smart-account sweep patterns
-    ///         transfer to `address(this)`.
-    /// @param pairs    `holder` is the user's main address, `destination` the subaccount.
-    /// @param selfEdge Whether to also open `destination -> destination`.
-    /// @param allowed  True to link, false to unlink the same edge set.
-    function linkSubaccounts(Edge[] calldata pairs, bool selfEdge, bool allowed) external {
-        _checkAllowlistAdmin();
-        for (uint256 i = 0; i < pairs.length; ++i) {
-            (address user, address sub) = (pairs[i].holder, pairs[i].destination);
-            _setIfChanged(user, sub, allowed);
-            _setIfChanged(sub, user, allowed);
-            if (selfEdge) _setIfChanged(sub, sub, allowed);
         }
     }
 

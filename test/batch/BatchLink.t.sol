@@ -3,9 +3,13 @@ pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice The bidirectional helpers — `setPairs` and `linkSubaccounts` — which
-///         are what the subaccount flow actually calls. A "link" is 2 edges, or
-///         3 when the subaccount self-edge is included.
+/// @notice `setPairs` — the bidirectional helper the subaccount flow calls.
+///         A link is exactly 2 edges: `user -> sub` and `sub -> user`.
+///
+///         It writes no self-edge. Self-transfers are gated like any other
+///         route, so `x -> x` stays closed unless an admin approves it
+///         explicitly; a contract that self-transfers without that approval is
+///         supposed to fail rather than be silently accommodated.
 contract BatchLinkTest is BaseTest {
     function test_SetPairs_OpensBothDirections() public {
         vm.prank(admin);
@@ -15,12 +19,42 @@ contract BatchLinkTest is BaseTest {
         assertTrue(token.allowedDestination(bob, alice));
     }
 
-    function test_SetPairs_DoesNotOpenSelfEdges() public {
+    function test_SetPairs_WritesExactlyTwoEdgesPerPair() public {
+        vm.recordLogs();
         vm.prank(admin);
         token.setPairs(_edges(alice, bob), true);
 
-        assertFalse(token.allowedDestination(alice, alice));
-        assertFalse(token.allowedDestination(bob, bob));
+        assertEq(vm.getRecordedLogs().length, 2, "a link is 2 edges, no more");
+    }
+
+    /// @dev The behavior this change is about: linking must not quietly open a
+    ///      self-route for either party.
+    function test_SetPairs_WritesNoSelfEdge() public {
+        vm.prank(admin);
+        token.setPairs(_edges(alice, bob), true);
+
+        assertFalse(token.allowedDestination(alice, alice), "user self-edge must stay closed");
+        assertFalse(token.allowedDestination(bob, bob), "subaccount self-edge must stay closed");
+    }
+
+    /// @dev ...and a self-transfer therefore still reverts after linking.
+    function test_SelfTransfer_StillRevertsAfterLinking() public {
+        vm.prank(admin);
+        token.setPairs(_edges(alice, bob), true);
+
+        vm.prank(alice);
+        _expectNotAllowed(alice, alice);
+        token.transfer(alice, 1 ether);
+    }
+
+    /// @dev A self-route is reachable, but only by approving it on purpose.
+    function test_SelfEdge_RequiresExplicitApproval() public {
+        vm.prank(admin);
+        token.setDestinations(_edges(alice, alice), true);
+
+        vm.prank(alice);
+        token.transfer(alice, 1 ether);
+        assertEq(token.balanceOf(alice), 1_000 ether, "self-transfer is balance-neutral");
     }
 
     function test_SetPairs_ClosesBothDirections() public {
@@ -33,43 +67,9 @@ contract BatchLinkTest is BaseTest {
         assertFalse(token.allowedDestination(bob, alice));
     }
 
-    function test_LinkSubaccounts_WithoutSelfEdge_WritesTwoEdges() public {
-        vm.recordLogs();
+    function test_SetPairs_LinksManyPairsInOneCall() public {
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), false, true);
-
-        assertEq(vm.getRecordedLogs().length, 2, "2 edges per link without self-edge");
-        assertTrue(token.allowedDestination(alice, bob));
-        assertTrue(token.allowedDestination(bob, alice));
-        assertFalse(token.allowedDestination(bob, bob));
-    }
-
-    function test_LinkSubaccounts_WithSelfEdge_WritesThreeEdges() public {
-        vm.recordLogs();
-        vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
-
-        assertEq(vm.getRecordedLogs().length, 3, "3 edges per link with self-edge");
-        assertTrue(token.allowedDestination(alice, bob));
-        assertTrue(token.allowedDestination(bob, alice));
-        assertTrue(token.allowedDestination(bob, bob), "subaccount self-edge");
-        assertFalse(token.allowedDestination(alice, alice), "user self-edge is NOT implied");
-    }
-
-    function test_LinkSubaccounts_UnlinkClosesTheSameEdgeSet() public {
-        vm.startPrank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
-        token.linkSubaccounts(_edges(alice, bob), true, false);
-        vm.stopPrank();
-
-        assertFalse(token.allowedDestination(alice, bob));
-        assertFalse(token.allowedDestination(bob, alice));
-        assertFalse(token.allowedDestination(bob, bob));
-    }
-
-    function test_LinkSubaccounts_LinksManyPairsInOneCall() public {
-        vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob, carol, minter), false, true);
+        token.setPairs(_edges(alice, bob, carol, minter), true);
 
         assertTrue(token.isLinked(alice, bob));
         assertTrue(token.isLinked(carol, minter));
@@ -80,7 +80,7 @@ contract BatchLinkTest is BaseTest {
     ///      both ways between the user and their subaccount, and nowhere else.
     function test_LinkedSubaccount_CanTransferBothWaysButNotOnward() public {
         vm.prank(admin);
-        token.linkSubaccounts(_edges(alice, bob), true, true);
+        token.setPairs(_edges(alice, bob), true);
 
         vm.prank(alice);
         token.transfer(bob, 100 ether);
