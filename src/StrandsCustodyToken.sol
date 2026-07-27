@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC20Burnable } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
+import { StrandsAllowlistBatch } from "./StrandsAllowlistBatch.sol";
 
 /// @title  Strands Custody Token (SCT)
 /// @notice ERC20Burnable token with a privileged custodial burn path.
@@ -13,7 +14,9 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
 ///         tokens from any holder without requiring prior allowance.
 ///         Holder-to-holder transfers are default-deny: a holder may only
 ///         transfer to destinations the admin has approved for that holder.
-contract StrandsCustodyToken is ERC20Burnable, AccessControl {
+///         Batch helpers for managing that allowlist live in
+///         {StrandsAllowlistBatch}.
+contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBatch {
     bytes32 public constant CUSTODIAN_ROLE = keccak256("CUSTODIAN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
@@ -69,8 +72,26 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        _setDestinationAllowed(holder, destination, allowed);
+    }
+
+    /// @dev {StrandsAllowlistBatch} hook: gate batch writes on the same role the
+    ///      single setter uses, producing an identical
+    ///      `AccessControlUnauthorizedAccount` revert.
+    function _checkAllowlistAdmin() internal view override {
+        _checkRole(DEFAULT_ADMIN_ROLE);
+    }
+
+    /// @dev {StrandsAllowlistBatch} hook: the single write, shared by the public
+    ///      setter and every batch entrypoint.
+    function _setDestinationAllowed(address holder, address destination, bool allowed) internal override {
         allowedDestination[holder][destination] = allowed;
         emit DestinationAllowedSet(holder, destination, allowed);
+    }
+
+    /// @dev {StrandsAllowlistBatch} hook: read an edge.
+    function _allowedDestination(address holder, address destination) internal view override returns (bool) {
+        return allowedDestination[holder][destination];
     }
 
     /// @dev Enforce the per-holder destination allowlist on holder-to-holder

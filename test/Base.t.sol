@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
+import { StrandsAllowlistBatch } from "../src/StrandsAllowlistBatch.sol";
 
 /// @title  Shared test fixture
 /// @notice Deploys the token, wires MINTER_ROLE / CUSTODIAN_ROLE and funds
@@ -57,5 +58,39 @@ abstract contract BaseTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, caller, bytes32(0))
         );
+    }
+
+    // ---------- array literals for the batch entrypoints ----------
+
+    function _edges(address h, address d) internal pure returns (StrandsAllowlistBatch.Edge[] memory e) {
+        e = new StrandsAllowlistBatch.Edge[](1);
+        e[0] = StrandsAllowlistBatch.Edge(h, d);
+    }
+
+    function _edges(address h1, address d1, address h2, address d2)
+        internal
+        pure
+        returns (StrandsAllowlistBatch.Edge[] memory e)
+    {
+        e = new StrandsAllowlistBatch.Edge[](2);
+        e[0] = StrandsAllowlistBatch.Edge(h1, d1);
+        e[1] = StrandsAllowlistBatch.Edge(h2, d2);
+    }
+
+    function _addrs(address a) internal pure returns (address[] memory x) {
+        x = new address[](1);
+        x[0] = a;
+    }
+
+    function _addrs(address a, address b) internal pure returns (address[] memory x) {
+        x = new address[](2);
+        x[0] = a;
+        x[1] = b;
+    }
+
+    function _bools(bool a, bool b) internal pure returns (bool[] memory x) {
+        x = new bool[](2);
+        x[0] = a;
+        x[1] = b;
     }
 }
