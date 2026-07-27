@@ -19,7 +19,7 @@ contract StrandsCustodyTokenTest is Test {
     event Transfer(address indexed from, address indexed to, uint256 value);
 
     function setUp() public {
-        token = new StrandsCustodyToken(admin);
+        token = new StrandsCustodyToken(admin, 18);
 
         vm.startPrank(admin);
         token.grantRole(token.MINTER_ROLE(), minter);
@@ -37,6 +37,12 @@ contract StrandsCustodyTokenTest is Test {
         assertEq(token.decimals(), 18);
     }
 
+    function test_Decimals_AreSetByConstructor() public {
+        assertEq(new StrandsCustodyToken(admin, 6).decimals(), 6, "usdc");
+        assertEq(new StrandsCustodyToken(admin, 8).decimals(), 8, "btc");
+        assertEq(new StrandsCustodyToken(admin, 18).decimals(), 18, "eth");
+    }
+
     // ---------- roles ----------
     function test_AdminHasDefaultAdminRole() public view {
         assertTrue(token.hasRole(token.DEFAULT_ADMIN_ROLE(), admin));
@@ -44,7 +50,7 @@ contract StrandsCustodyTokenTest is Test {
 
     function test_Constructor_RevertsOnZeroAdmin() public {
         vm.expectRevert(bytes("admin=0"));
-        new StrandsCustodyToken(address(0));
+        new StrandsCustodyToken(address(0), 18);
     }
 
     function test_AdminCanRevokeCustodian() public {
