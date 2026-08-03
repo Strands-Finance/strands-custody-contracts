@@ -7,14 +7,15 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
 import { StrandsAllowlistBatch } from "./StrandsAllowlistBatch.sol";
 
 /// @title  Strands Custody Token (SCT)
-/// @notice ERC20Burnable token with a privileged custodial burn path.
-///         Users may burn their own balance (or burn another's via allowance)
-///         using the standard `burn` / `burnFrom`. Accounts holding
-///         CUSTODIAN_ROLE may additionally call `custodyBurn` to destroy
-///         tokens from any holder without requiring prior allowance.
+/// @notice ERC20 token where a balance is a claim against an off-chain ledger,
+///         so destroying supply is CUSTODIAN_ROLE-only. That covers the whole
+///         burn surface — the inherited `burn` / `burnFrom` are gated exactly
+///         like `custodyBurn`, and all three emit {CustodyBurn}. A holder
+///         cannot redeem themselves, and cannot delegate that power via an
+///         ERC20 allowance.
 ///         Holder-to-holder transfers are default-deny: a holder may only
 ///         transfer to destinations the admin has approved for that holder.
-///         Batch helpers for managing that allowlist live in
+///         Linking a user to their subaccounts is one call in
 ///         {StrandsAllowlistBatch}.
 contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBatch {
     bytes32 public constant CUSTODIAN_ROLE = keccak256("CUSTODIAN_ROLE");
@@ -28,8 +29,11 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBa
     ///         may transfer tokens to `destination`.
     mapping(address holder => mapping(address destination => bool)) public allowedDestination;
 
-    /// @notice Emitted when a custodian burns tokens from a holder
-    ///         without using the ERC20 allowance flow.
+    /// @notice Emitted on every burn, whichever entrypoint the custodian used.
+    /// @dev    A reconciler tracking the off-chain ledger can subscribe to this
+    ///         alone: `custodyBurn`, `burn` and `burnFrom` all emit it, so no
+    ///         destroyed supply is invisible here. `from == custodian` means the
+    ///         custodian burned their own balance via `burn`.
     event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
 
     /// @notice Emitted when the admin allows or disallows a transfer
@@ -66,6 +70,26 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBa
         emit CustodyBurn(msg.sender, from, amount);
     }
 
+    /// @notice Burn `amount` of the caller's own balance. Restricted to
+    ///         CUSTODIAN_ROLE — a holder who could burn unilaterally would
+    ///         desync the off-chain ledger the balance is a claim against.
+    function burn(uint256 amount) public override onlyRole(CUSTODIAN_ROLE) {
+        super.burn(amount);
+        emit CustodyBurn(msg.sender, msg.sender, amount);
+    }
+
+    /// @notice Burn `amount` from `from`, spending the caller's allowance.
+    ///         Restricted to CUSTODIAN_ROLE. Strictly weaker than
+    ///         `custodyBurn`, which needs no allowance; retained so the
+    ///         inherited ERC20Burnable surface stays coherent rather than
+    ///         silently reachable.
+    /// @dev    The role check runs BEFORE `super`, so a rejected call never
+    ///         reaches `_spendAllowance` and leaves the allowance intact.
+    function burnFrom(address from, uint256 amount) public override onlyRole(CUSTODIAN_ROLE) {
+        super.burnFrom(from, amount);
+        emit CustodyBurn(msg.sender, from, amount);
+    }
+
     /// @notice Allow or disallow `holder` to transfer tokens to `destination`.
     ///         Restricted to DEFAULT_ADMIN_ROLE.
     function setDestinationAllowed(address holder, address destination, bool allowed)
@@ -96,8 +120,9 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBa
 
     /// @dev Enforce the per-holder destination allowlist on holder-to-holder
     ///      transfers only. Mints (`from == 0`) and burns (`to == 0`) bypass
-    ///      the check, keeping `mint` / `burn` / `burnFrom` / `custodyBurn`
-    ///      unrestricted.
+    ///      the check, so issuance and redemption need no edges. That is an
+    ///      exemption from the ALLOWLIST and nothing more: `mint` is still
+    ///      MINTER_ROLE and every burn path is still CUSTODIAN_ROLE.
     function _update(address from, address to, uint256 value) internal override {
         if (from != address(0) && to != address(0) && !allowedDestination[from][to]) {
             revert TransferDestinationNotAllowed(from, to);

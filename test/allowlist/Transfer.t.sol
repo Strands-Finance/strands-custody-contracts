@@ -2,17 +2,14 @@
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 
 /// @notice `transfer` gating: the happy path, the default-deny path, and that
 ///         un-setting an edge closes the route again.
 contract TransferTest is BaseTest {
     function test_Transfer_ToApprovedDestination() public {
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true);
+        _allow(alice, bob);
 
-        vm.expectEmit(true, true, false, true, address(token));
-        emit Transfer(alice, bob, 100 ether);
+        _expectTransferEvent(alice, bob, 100 ether);
         vm.prank(alice);
         token.transfer(bob, 100 ether);
 
@@ -22,18 +19,16 @@ contract TransferTest is BaseTest {
 
     function test_Transfer_RevertsOnUnapprovedDestination() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, alice, bob));
+        _expectNotAllowed(alice, bob);
         token.transfer(bob, 100 ether);
     }
 
     function test_Transfer_RevertsAfterDestinationUnset() public {
-        vm.startPrank(admin);
-        token.setDestinationAllowed(alice, bob, true);
-        token.setDestinationAllowed(alice, bob, false);
-        vm.stopPrank();
+        _allow(alice, bob);
+        _disallow(alice, bob);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, alice, bob));
+        _expectNotAllowed(alice, bob);
         token.transfer(bob, 1);
     }
 }

@@ -2,14 +2,19 @@
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
+import { StrandsAllowlistBatch } from "../../src/StrandsAllowlistBatch.sol";
 
-/// @notice `setPairs` — the bidirectional helper the subaccount flow calls.
+/// @notice `setPairs` — the bidirectional helper the subaccount flow calls, and
+///         the only batch writer on the token.
 ///         A link is exactly 2 edges: `user -> sub` and `sub -> user`.
 ///
 ///         It writes no self-edge. Self-transfers are gated like any other
 ///         route, so `x -> x` stays closed unless an admin approves it
 ///         explicitly; a contract that self-transfers without that approval is
 ///         supposed to fail rather than be silently accommodated.
+///
+/// @dev    `setPairs` is the subject here, so it is called directly rather than
+///         through the fixture's `_link` / `_unlink` wrappers.
 contract BatchLinkTest is BaseTest {
     function test_SetPairs_OpensBothDirections() public {
         vm.prank(admin);
@@ -24,7 +29,7 @@ contract BatchLinkTest is BaseTest {
         vm.prank(admin);
         token.setPairs(_edges(alice, bob), true);
 
-        assertEq(vm.getRecordedLogs().length, 2, "a link is 2 edges, no more");
+        _assertLogCount(2, "a link is 2 edges, no more");
     }
 
     /// @dev The behavior this change is about: linking must not quietly open a
@@ -47,14 +52,16 @@ contract BatchLinkTest is BaseTest {
         token.transfer(alice, 1 ether);
     }
 
-    /// @dev A self-route is reachable, but only by approving it on purpose.
+    /// @dev A self-route is reachable, but only by approving it on purpose with
+    ///      the single setter — no batch entrypoint can produce an asymmetric
+    ///      edge, which is the point of `setPairs` being the only one.
     function test_SelfEdge_RequiresExplicitApproval() public {
         vm.prank(admin);
-        token.setDestinations(_edges(alice, alice), true);
+        token.setDestinationAllowed(alice, alice, true);
 
         vm.prank(alice);
         token.transfer(alice, 1 ether);
-        assertEq(token.balanceOf(alice), 1_000 ether, "self-transfer is balance-neutral");
+        assertEq(token.balanceOf(alice), INITIAL_MINT, "self-transfer is balance-neutral");
     }
 
     function test_SetPairs_ClosesBothDirections() public {
@@ -94,5 +101,15 @@ contract BatchLinkTest is BaseTest {
         vm.prank(bob);
         _expectNotAllowed(bob, carol);
         token.transfer(carol, 1 ether);
+    }
+
+    function test_EmptyBatch_IsASuccessfulNoOp() public {
+        StrandsAllowlistBatch.Edge[] memory none = new StrandsAllowlistBatch.Edge[](0);
+
+        vm.recordLogs();
+        vm.prank(admin);
+        token.setPairs(none, true);
+
+        _assertLogCount(0, "empty batch must emit nothing");
     }
 }
