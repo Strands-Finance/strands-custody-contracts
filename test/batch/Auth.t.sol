@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { BaseTest } from "../Base.t.sol";
 import { StrandsAllowlistBatch } from "../../src/StrandsAllowlistBatch.sol";
 
@@ -16,43 +15,27 @@ import { StrandsAllowlistBatch } from "../../src/StrandsAllowlistBatch.sol";
 ///
 ///         Every assertion below exists to prove that holds — if `msg.sender`
 ///         were not preserved, these fail and the whole approach is wrong.
+///
+/// @dev    Authorization of the batch entrypoints is the subject here, so
+///         `setPairs` is called directly throughout rather than through the
+///         fixture's `_link` wrapper.
 contract BatchAuthTest is BaseTest {
-    function test_Admin_CanCallEveryBatchEntrypoint() public {
-        vm.startPrank(admin);
-        token.setDestinations(_edges(alice, bob), true);
-        token.setDestinationsMixed(_edges(alice, carol, bob, carol), _bools(true, true));
-        token.setPairs(_edges(alice, minter), true);
-        token.setDestinationsForHolder(alice, _addrs(bob, carol), true);
-        token.setHoldersForDestination(_addrs(bob, carol), alice, true);
-        vm.stopPrank();
+    function test_Admin_CanBatch() public {
+        vm.prank(admin);
+        token.setPairs(_edges(alice, bob, carol, minter), true);
 
-        assertTrue(token.allowedDestination(alice, bob));
-        assertTrue(token.allowedDestination(alice, minter));
-        assertTrue(token.allowedDestination(minter, alice));
-        assertTrue(token.allowedDestination(bob, alice));
+        assertTrue(token.isLinked(alice, bob));
+        assertTrue(token.isLinked(carol, minter));
     }
 
     /// @dev The core proof: an ordinary caller is rejected with exactly the error
     ///      the single setter produces, because the same `_checkRole` runs.
-    function test_NonAdmin_CannotCallAnyBatchEntrypoint() public {
-        vm.startPrank(alice);
-
-        _expectNotAdmin(alice);
-        token.setDestinations(_edges(alice, bob), true);
-
-        _expectNotAdmin(alice);
-        token.setDestinationsMixed(_edges(alice, bob, alice, carol), _bools(true, true));
-
+    function test_NonAdmin_CannotBatch() public {
+        vm.prank(alice);
         _expectNotAdmin(alice);
         token.setPairs(_edges(alice, bob), true);
 
-        _expectNotAdmin(alice);
-        token.setDestinationsForHolder(alice, _addrs(bob), true);
-
-        _expectNotAdmin(alice);
-        token.setHoldersForDestination(_addrs(alice), bob, true);
-
-        vm.stopPrank();
+        assertFalse(token.allowedDestination(alice, bob));
     }
 
     /// @dev `_setIfChanged` skips edges already at the target value, so an
@@ -61,12 +44,12 @@ contract BatchAuthTest is BaseTest {
     ///      unauthorized caller would get a silent success here.
     function test_NonAdmin_IsRejectedEvenWhenBatchIsEntirelyNoOp() public {
         vm.prank(admin);
-        token.setDestinations(_edges(alice, bob), true); // already applied
+        token.setPairs(_edges(alice, bob), true); // already applied
 
         // Re-submitting the identical batch writes nothing at all...
         vm.prank(alice);
         _expectNotAdmin(alice);
-        token.setDestinations(_edges(alice, bob), true); // ...and must STILL revert
+        token.setPairs(_edges(alice, bob), true); // ...and must STILL revert
     }
 
     function test_NonAdminBatch_LeavesNoStateChangeAndNoEvents() public {
@@ -76,7 +59,7 @@ contract BatchAuthTest is BaseTest {
         _expectNotAdmin(alice);
         token.setPairs(_edges(alice, bob), true);
 
-        assertEq(vm.getRecordedLogs().length, 0, "a rejected batch must emit nothing");
+        _assertLogCount(0, "a rejected batch must emit nothing");
         assertFalse(token.allowedDestination(alice, bob));
         assertFalse(token.allowedDestination(bob, alice));
     }
@@ -84,80 +67,63 @@ contract BatchAuthTest is BaseTest {
     /// @dev Authorization is sourced from the token's role registry, not cached,
     ///      so a grant takes effect on the very next call.
     function test_NewlyGrantedAdmin_CanBatchImmediately() public {
-        // hoisted: a `token.X_ROLE()` call on a pranked line would consume the
-        // cheatcode before the call under test runs
-        bytes32 role = token.DEFAULT_ADMIN_ROLE();
-
         vm.prank(alice);
         _expectNotAdmin(alice);
-        token.setDestinations(_edges(alice, bob), true);
+        token.setPairs(_edges(alice, bob), true);
 
         vm.prank(admin);
-        token.grantRole(role, alice);
+        token.grantRole(DEFAULT_ADMIN_ROLE, alice);
 
         vm.prank(alice);
-        token.setDestinations(_edges(alice, bob), true);
-        assertTrue(token.allowedDestination(alice, bob));
+        token.setPairs(_edges(alice, bob), true);
+        assertTrue(token.isLinked(alice, bob));
     }
 
     function test_RevokedAdmin_LosesBatchAccessImmediately() public {
-        bytes32 role = token.DEFAULT_ADMIN_ROLE();
         vm.startPrank(admin);
-        token.grantRole(role, carol); // keep a live admin so this is not a lockout
-        token.setDestinations(_edges(alice, bob), true);
+        token.grantRole(DEFAULT_ADMIN_ROLE, carol); // keep a live admin so this is not a lockout
+        token.setPairs(_edges(alice, bob), true);
         vm.stopPrank();
 
         vm.prank(carol);
-        token.revokeRole(role, admin);
+        token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
 
         vm.prank(admin);
         _expectNotAdmin(admin);
-        token.setDestinations(_edges(alice, carol), true);
+        token.setPairs(_edges(alice, carol), true);
 
         vm.prank(carol);
-        token.setDestinations(_edges(alice, carol), true); // the surviving admin still can
-        assertTrue(token.allowedDestination(alice, carol));
+        token.setPairs(_edges(alice, carol), true); // the surviving admin still can
+        assertTrue(token.isLinked(alice, carol));
     }
 
-    /// @dev Exhaustive gate check over an ARBITRARY caller, via low-level calls
-    ///      so every write entrypoint is covered uniformly. `caller` is fuzzed,
-    ///      so this asserts the gate for arbitrary addresses rather than for the
-    ///      handful of named actors in the fixture.
-    function testFuzz_ArbitraryNonAdmin_CannotCallAnyBatchWrite(address caller) public {
-        bytes32 role = token.DEFAULT_ADMIN_ROLE();
-        vm.assume(!token.hasRole(role, caller));
+    /// @dev The gate check over an ARBITRARY caller, via a low-level call so the
+    ///      revert data is compared byte-for-byte rather than through a
+    ///      cheatcode. `caller` is fuzzed, so this asserts the gate for arbitrary
+    ///      addresses rather than for the handful of named actors in the fixture.
+    function testFuzz_ArbitraryNonAdmin_CannotBatch(address caller) public {
+        vm.assume(!token.hasRole(DEFAULT_ADMIN_ROLE, caller));
 
-        bytes[] memory calls = new bytes[](5);
-        calls[0] = abi.encodeCall(StrandsAllowlistBatch.setDestinations, (_edges(alice, bob), true));
-        calls[1] = abi.encodeCall(
-            StrandsAllowlistBatch.setDestinationsMixed, (_edges(alice, bob, alice, carol), _bools(true, true))
-        );
-        calls[2] = abi.encodeCall(StrandsAllowlistBatch.setPairs, (_edges(alice, bob), true));
-        calls[3] = abi.encodeCall(StrandsAllowlistBatch.setDestinationsForHolder, (alice, _addrs(bob, carol), true));
-        calls[4] = abi.encodeCall(StrandsAllowlistBatch.setHoldersForDestination, (_addrs(bob, carol), alice, true));
+        bytes memory expected = _missingRoleData(caller, DEFAULT_ADMIN_ROLE);
 
-        bytes memory expected =
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, caller, role);
+        vm.prank(caller);
+        (bool ok, bytes memory ret) = address(token)
+            .call(abi.encodeCall(StrandsAllowlistBatch.setPairs, (_edges(alice, bob, alice, carol), true)));
 
-        for (uint256 i = 0; i < calls.length; ++i) {
-            vm.prank(caller);
-            (bool ok, bytes memory ret) = address(token).call(calls[i]);
-            assertFalse(ok, "an unprivileged caller reached a batch write");
-            assertEq(ret, expected, "wrong revert for a batch write");
-        }
+        assertFalse(ok, "an unprivileged caller reached a batch write");
+        assertEq(ret, expected, "wrong revert for a batch write");
 
-        // nothing leaked through any of the five attempts
+        // nothing leaked through
         assertFalse(token.allowedDestination(alice, bob));
         assertFalse(token.allowedDestination(bob, alice));
         assertFalse(token.allowedDestination(alice, carol));
-        assertFalse(token.allowedDestination(bob, alice));
+        assertFalse(token.allowedDestination(carol, alice));
     }
 
     /// @dev The read side is deliberately open — preflight must work for anyone,
     ///      otherwise integrations are pushed back to probing with transfers.
     function testFuzz_ArbitraryCaller_CanAlwaysReadViews(address caller) public {
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob), true);
+        _link(alice, bob);
 
         vm.prank(caller);
         assertTrue(token.isLinked(alice, bob));
@@ -175,17 +141,16 @@ contract BatchAuthTest is BaseTest {
 
         vm.prank(custodian);
         _expectNotAdmin(custodian);
-        token.setDestinations(_edges(alice, bob), true);
+        token.setPairs(_edges(alice, carol), true);
 
         assertFalse(token.allowedDestination(alice, bob));
+        assertFalse(token.allowedDestination(alice, carol));
     }
 
     /// @dev Batch and single-setter paths must be indistinguishable to a caller
     ///      deciding how to handle a failure.
     function test_BatchRevert_MatchesSingleSetterRevertExactly() public {
-        bytes memory expected = abi.encodeWithSelector(
-            bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), bob, bytes32(0)
-        );
+        bytes memory expected = _missingRoleData(bob, DEFAULT_ADMIN_ROLE);
 
         vm.prank(bob);
         (bool okSingle, bytes memory single) =
@@ -193,7 +158,7 @@ contract BatchAuthTest is BaseTest {
 
         vm.prank(bob);
         (bool okBatch, bytes memory batch) =
-            address(token).call(abi.encodeCall(StrandsAllowlistBatch.setDestinations, (_edges(alice, bob), true)));
+            address(token).call(abi.encodeCall(StrandsAllowlistBatch.setPairs, (_edges(alice, bob), true)));
 
         assertFalse(okSingle);
         assertFalse(okBatch);

@@ -2,11 +2,18 @@
 pragma solidity ^0.8.24;
 
 /// @title  Strands Allowlist Batch
-/// @notice Batch helpers for a per-holder destination allowlist, collapsing N
-///         single-edge writes into one transaction. The saving is the fixed
-///         21,000 gas base cost and the signature paid per transaction, not the
-///         per-edge write cost.
-/// @dev    Mixin with no storage of its own, so it does not disturb the
+/// @notice Batched subaccount linking for a per-holder destination allowlist,
+///         collapsing 2N single-edge writes into one transaction. The saving is
+///         the fixed 21,000 gas base cost and the signature paid per
+///         transaction, not the per-edge write cost.
+/// @dev    The authorised topology is a set of disjoint user ↔ subaccount
+///         2-cycles, so `setPairs` is the only batch WRITER: it is exactly the
+///         shape the policy permits, and it cannot express any other. Anything
+///         asymmetric — a self-edge, one leg of a link — is a deliberate,
+///         one-at-a-time decision for the inheritor's single setter, not
+///         something to make convenient in bulk.
+///
+///         Mixin with no storage of its own, so it does not disturb the
 ///         inheritor's storage layout. The inheriting contract supplies the
 ///         three hooks below.
 ///
@@ -25,9 +32,6 @@ abstract contract StrandsAllowlistBatch {
         address destination;
     }
 
-    /// @notice Thrown when `setDestinationsMixed` is given mismatched arrays.
-    error ArrayLengthMismatch(uint256 edgesLength, uint256 flagsLength);
-
     /// @dev Must revert unless the caller may write allowlist edges.
     function _checkAllowlistAdmin() internal view virtual;
 
@@ -37,52 +41,18 @@ abstract contract StrandsAllowlistBatch {
     /// @dev Must read the current edge value.
     function _allowedDestination(address holder, address destination) internal view virtual returns (bool);
 
-    /// @notice Set many edges to the same value.
-    function setDestinations(Edge[] calldata edges, bool allowed) external {
-        _checkAllowlistAdmin();
-        for (uint256 i = 0; i < edges.length; ++i) {
-            _setIfChanged(edges[i].holder, edges[i].destination, allowed);
-        }
-    }
-
-    /// @notice Set many edges to per-edge values, mixing opens and closes in one
-    ///         transaction.
-    function setDestinationsMixed(Edge[] calldata edges, bool[] calldata allowed) external {
-        _checkAllowlistAdmin();
-        if (edges.length != allowed.length) revert ArrayLengthMismatch(edges.length, allowed.length);
-        for (uint256 i = 0; i < edges.length; ++i) {
-            _setIfChanged(edges[i].holder, edges[i].destination, allowed[i]);
-        }
-    }
-
     /// @notice Open or close BOTH directions for each pair — exactly 2 edges per
     ///         pair and nothing else. This is the subaccount-linking call:
     ///         `holder` is the user's main address, `destination` the subaccount.
     /// @dev    Self-edges are deliberately NOT written. A self-transfer is gated
     ///         like every other route, so `x -> x` stays closed unless an admin
-    ///         approves it explicitly via `setDestinations`. Anything that
+    ///         approves it explicitly with the single setter. Anything that
     ///         self-transfers without that approval is meant to fail.
     function setPairs(Edge[] calldata pairs, bool allowed) external {
         _checkAllowlistAdmin();
         for (uint256 i = 0; i < pairs.length; ++i) {
             _setIfChanged(pairs[i].holder, pairs[i].destination, allowed);
             _setIfChanged(pairs[i].destination, pairs[i].holder, allowed);
-        }
-    }
-
-    /// @notice Hub-and-spoke: one holder, many destinations.
-    function setDestinationsForHolder(address holder, address[] calldata destinations, bool allowed) external {
-        _checkAllowlistAdmin();
-        for (uint256 i = 0; i < destinations.length; ++i) {
-            _setIfChanged(holder, destinations[i], allowed);
-        }
-    }
-
-    /// @notice Many holders, one destination (e.g. a shared settlement address).
-    function setHoldersForDestination(address[] calldata holders, address destination, bool allowed) external {
-        _checkAllowlistAdmin();
-        for (uint256 i = 0; i < holders.length; ++i) {
-            _setIfChanged(holders[i], destination, allowed);
         }
     }
 

@@ -9,8 +9,7 @@ import { StrandsAllowlistBatch } from "../../src/StrandsAllowlistBatch.sol";
 ///         allowlist also blocks, and which would revert rather than answer.
 contract ViewsTest is BaseTest {
     function test_AreAllowed_ReturnsResultsInInputOrder() public {
-        vm.prank(admin);
-        token.setDestinations(_edges(alice, carol), true);
+        _allow(alice, carol);
 
         // deliberately ordered so a naive implementation returning [true,false] fails
         bool[] memory out = token.areAllowed(_edges(alice, bob, alice, carol));
@@ -28,26 +27,22 @@ contract ViewsTest is BaseTest {
     function test_IsLinked_RequiresBothDirections() public {
         assertFalse(token.isLinked(alice, bob), "closed both ways");
 
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true);
+        _allow(alice, bob);
         assertFalse(token.isLinked(alice, bob), "one direction is not a link");
 
-        vm.prank(admin);
-        token.setDestinationAllowed(bob, alice, true);
+        _allow(bob, alice);
         assertTrue(token.isLinked(alice, bob), "both directions open");
     }
 
     function test_IsLinked_IsSymmetric() public {
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob), true);
+        _link(alice, bob);
 
         assertTrue(token.isLinked(alice, bob));
         assertTrue(token.isLinked(bob, alice), "argument order must not matter");
     }
 
     function test_Views_RequireNoAuthorization() public {
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob), true);
+        _link(alice, bob);
 
         // an arbitrary unprivileged caller can still read
         vm.prank(carol);
@@ -59,13 +54,10 @@ contract ViewsTest is BaseTest {
     }
 
     function test_IsLinked_TracksRevocation() public {
-        vm.startPrank(admin);
-        token.setPairs(_edges(alice, bob), true);
+        _link(alice, bob);
         assertTrue(token.isLinked(alice, bob));
 
-        token.setPairs(_edges(alice, bob), false);
-        vm.stopPrank();
-
+        _unlink(alice, bob);
         assertFalse(token.isLinked(alice, bob));
     }
 }

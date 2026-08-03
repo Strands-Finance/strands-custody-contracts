@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { BaseTest } from "../Base.t.sol";
 
 /// @notice `mint` and its MINTER_ROLE gate. That mint bypasses the destination
@@ -11,13 +10,12 @@ contract MintTest is BaseTest {
         vm.prank(minter);
         token.mint(bob, 50 ether);
         assertEq(token.balanceOf(bob), 50 ether);
-        assertEq(token.totalSupply(), 1_050 ether);
+        assertEq(token.totalSupply(), INITIAL_MINT + 50 ether);
     }
 
     function test_NonMinter_CannotMint() public {
-        bytes32 role = token.MINTER_ROLE();
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, role));
+        _expectNotMinter(alice);
         token.mint(bob, 1);
     }
 }

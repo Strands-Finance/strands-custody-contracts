@@ -4,22 +4,22 @@ Custodial ERC20 token for the Strands platform.
 
 ## Overview
 
-`StrandsCustodyToken` is an OpenZeppelin `ERC20Burnable` token with a privileged
-custodial burn path gated by `AccessControl`. Users retain the standard ERC20
-behavior — they can burn their own balance with `burn`, or allow a third party
-to burn on their behalf via `approve` + `burnFrom`. In addition, any address
-holding `CUSTODIAN_ROLE` may call `custodyBurn(from, amount)` to destroy tokens
-from any holder **without prior allowance**. This is the on-chain hook that lets
-Strands keep total supply consistent with an off-chain ledger when claims are
-redeemed.
+`StrandsCustodyToken` is an OpenZeppelin `ERC20Burnable` token gated by
+`AccessControl`. A balance here is a **claim against an off-chain ledger**, so
+destroying supply is `CUSTODIAN_ROLE`-only — and that covers the *entire* burn
+surface. The inherited `burn` and `burnFrom` are gated exactly like
+`custodyBurn(from, amount)`, which additionally needs no prior allowance. A
+holder cannot redeem themselves, and cannot delegate that power to anyone else
+via an ERC20 allowance. All three paths emit `CustodyBurn`, so a reconciler can
+track every unit of destroyed supply from that one event.
 
 Holder-to-holder transfers are **default-deny**: a holder can only `transfer` /
 `transferFrom` to destinations the admin has approved for that specific holder
-via `setDestinationAllowed`. Mint and burn paths (`mint`, `burn`, `burnFrom`,
-`custodyBurn`) are exempt from this restriction. Batch helpers for managing that
-allowlist — including one-transaction subaccount linking — come from
-[`StrandsAllowlistBatch`](./src/StrandsAllowlistBatch.sol); see
-[Subaccount transfers](#subaccount-transfers).
+via `setDestinationAllowed`. Mint and burn paths are exempt from *that*
+restriction — but only from that one; their role checks still apply. The
+authorised topology is a set of disjoint user ↔ subaccount pairs, and
+[`StrandsAllowlistBatch`](./src/StrandsAllowlistBatch.sol) links them one
+transaction at a time; see [Subaccount transfers](#subaccount-transfers).
 
 ## Token
 
@@ -36,7 +36,7 @@ allowlist — including one-transaction subaccount linking — come from
 | --- | --- |
 | `DEFAULT_ADMIN_ROLE` | Grant / revoke any role; manage the per-holder transfer destination allowlist (`setDestinationAllowed` and every [batch helper](#batch-helpers)) |
 | `MINTER_ROLE` | Call `mint(to, amount)` |
-| `CUSTODIAN_ROLE` | Call `custodyBurn(from, amount)` — bypasses allowance |
+| `CUSTODIAN_ROLE` | The entire burn surface: `custodyBurn(from, amount)` (no allowance needed), plus the inherited `burn` / `burnFrom` |
 
 The constructor grants `DEFAULT_ADMIN_ROLE` to the `admin` argument. The admin
 then grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to whichever addresses (ideally
@@ -46,7 +46,9 @@ multisigs / timelocks) should hold them.
 
 ```solidity
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
-function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE
+function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE — no allowance needed
+function burn(uint256 amount) public;                        // CUSTODIAN_ROLE (overridden)
+function burnFrom(address from, uint256 amount) public;      // CUSTODIAN_ROLE (overridden), spends allowance
 function setDestinationAllowed(address holder, address destination, bool allowed) external; // DEFAULT_ADMIN_ROLE
 function allowedDestination(address holder, address destination) external view returns (bool);
 
@@ -56,39 +58,47 @@ event DestinationAllowedSet(address indexed holder, address indexed destination,
 error TransferDestinationNotAllowed(address holder, address destination);
 ```
 
-Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with
-one behavioral change: `transfer` and `transferFrom` revert with
-`TransferDestinationNotAllowed` unless `allowedDestination[holder][destination]`
-is true (keyed by the token owner, not the spender).
+Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with two
+behavioral changes:
+
+1. `transfer` and `transferFrom` revert with `TransferDestinationNotAllowed`
+   unless `allowedDestination[holder][destination]` is true (keyed by the token
+   owner, not the spender).
+2. `burn` and `burnFrom` are `CUSTODIAN_ROLE`-only and emit `CustodyBurn`. They
+   keep their standard selectors, so an integration calling them still compiles
+   — it will revert with `AccessControlUnauthorizedAccount` unless the caller is
+   a custodian. `burnFrom` still spends the allowance, and the role check runs
+   *before* it, so a rejected call leaves the allowance untouched.
 
 ### Batch helpers
 
 Each allowlist entry is one directed edge, so a bidirectional link costs two
 writes. [`StrandsAllowlistBatch`](./src/StrandsAllowlistBatch.sol) — inherited by
-the token, not deployed separately — collapses those into a single transaction.
-All writes are `DEFAULT_ADMIN_ROLE`; the views are open.
+the token, not deployed separately — collapses N links into a single
+transaction. Writes are `DEFAULT_ADMIN_ROLE`; the views are open.
 
 ```solidity
 struct Edge { address holder; address destination; }
 
-function setDestinations(Edge[] calldata edges, bool allowed) external;
-function setDestinationsMixed(Edge[] calldata edges, bool[] calldata allowed) external;
 function setPairs(Edge[] calldata pairs, bool allowed) external;          // both directions — links a subaccount
-function setDestinationsForHolder(address holder, address[] calldata destinations, bool allowed) external;
-function setHoldersForDestination(address[] calldata holders, address destination, bool allowed) external;
 
 function areAllowed(Edge[] calldata edges) external view returns (bool[] memory);
 function isLinked(address user, address sub) external view returns (bool); // both directions open
-
-error ArrayLengthMismatch(uint256 edgesLength, uint256 flagsLength);
 ```
 
-Three behaviors worth knowing:
+Four behaviors worth knowing:
 
-- **Writes are `DEFAULT_ADMIN_ROLE`, with no exceptions.** Every entrypoint
-  checks the role before doing anything, so an unprivileged caller is rejected
-  with the same `AccessControlUnauthorizedAccount` the single setter throws —
-  even when the batch would have written nothing. Holding `MINTER_ROLE` or
+- **`setPairs` is the only batch writer, deliberately.** The authorised topology
+  is a set of disjoint user ↔ subaccount 2-cycles, and `setPairs` is exactly
+  that shape — it cannot express any other. Anything asymmetric (a self-edge,
+  one leg of a link, a shared destination fanned across many holders) is a
+  deliberate one-at-a-time decision for `setDestinationAllowed`, not something
+  made convenient in bulk.
+
+- **Writes are `DEFAULT_ADMIN_ROLE`, with no exceptions.** The role is checked
+  before anything else happens, so an unprivileged caller is rejected with the
+  same `AccessControlUnauthorizedAccount` the single setter throws — even when
+  the batch would have written nothing. Holding `MINTER_ROLE` or
   `CUSTODIAN_ROLE` is not a shortcut. The views are open by design, so
   integrations can preflight without privileges.
 
@@ -100,7 +110,8 @@ Three behaviors worth knowing:
   extra privilege exists anywhere.
 - **Batch writes skip no-ops.** An edge already at the target value is not
   rewritten and emits nothing, so re-running a manifest is cheap and quiet. The
-  single `setDestinationAllowed` deliberately still re-emits.
+  skip is per *edge*, so re-linking a half-linked pair costs exactly one write.
+  The single `setDestinationAllowed` deliberately still re-emits.
 
 ## Subaccount transfers
 
@@ -112,9 +123,9 @@ transaction.
 `_update` with `from == address(0)`, so issuance bypasses the allowlist and
 needs **zero edges**. Minting to a treasury and transferring out does not:
 holders are not exempt from the allowlist *even when they hold a privileged
-role*, so that path costs one edge per user, permanently. Redemption
-(`burn` / `custodyBurn`) is likewise exempt, so the allowlist only ever has to
-describe user ↔ subaccount routes.
+role*, so that path costs one edge per user, permanently. Redemption is likewise
+allowlist-exempt (though custodian-driven — the user cannot initiate it), so the
+allowlist only ever has to describe user ↔ subaccount routes.
 
 ```bash
 # 1. Deploy — admin receives DEFAULT_ADMIN_ROLE
@@ -151,16 +162,18 @@ cast send $TOKEN "setPairs((address,address)[],bool)" \
 
 ### Integration notes
 
-- **The subaccount is itself a holder.** Linking opens `user ↔ sub` and nothing
-  more. Any onward destination is a new edge keyed by the *subaccount*. Route
-  through the user's main address (`setDestinationsForHolder` makes that one
-  call) or edge count grows quadratically.
+- **The subaccount is itself a holder, and siblings are not connected.** Linking
+  opens `user ↔ sub` and nothing more, so `sub1 -> sub2` stays closed even
+  though both belong to the same wallet. Sibling traffic routes through the
+  user's main address — one `setPairs` entry per subaccount — which is what
+  keeps the edge count linear rather than quadratic.
+  `test/flow/SubaccountTransfers.t.sol` pins this shape.
 - **Zero-value transfers revert**, unlike a plain ERC20. Probe a route with
   `isLinked` / `areAllowed`, never `transfer(dest, 0)`.
 - **Self-transfers revert** unless allowlisted, and linking does NOT open a
   self-route. `x -> x` is an ordinary edge that an admin must approve on
-  purpose via `setDestinations`; a contract that self-transfers without that
-  approval is meant to fail rather than be silently accommodated.
+  purpose via `setDestinationAllowed`; a contract that self-transfers without
+  that approval is meant to fail rather than be silently accommodated.
 - **Counterfactual CREATE2 wallets can be linked before deployment**, but the
   address derives from `(factory, initCodeHash, salt)`; change any of those and
   the approval points at an address nobody controls. Re-derive before seeding.
@@ -173,11 +186,14 @@ cast send $TOKEN "setPairs((address,address)[],bool)" \
 ## Security
 
 `CUSTODIAN_ROLE` is a strong privilege — the holder can destroy any holder's
-balance. In production:
+balance, and is the **only** party who can, so it is a liveness dependency as
+well as a security one. In production:
 
 - Hold `DEFAULT_ADMIN_ROLE` in a timelock-controlled multisig.
 - Hold `CUSTODIAN_ROLE` in a multisig with operational signers only.
 - Do not grant `CUSTODIAN_ROLE` to EOAs in production.
+- Keep at least two holders of `CUSTODIAN_ROLE`. There is no self-service exit:
+  if every custodian key is lost, no balance can ever be redeemed.
 
 The transfer allowlist adds further considerations:
 
@@ -188,8 +204,11 @@ The transfer allowlist adds further considerations:
 - **Never renounce the last `DEFAULT_ADMIN_ROLE` holder.** The role is its own
   role admin, so once the last holder is gone no party can bootstrap a new one.
   The allowlist freezes permanently: existing routes become irrevocable, no new
-  route can ever be added, and unapproved balances are stranded. Burn paths keep
-  working, so holders can still redeem. Keep at least two admin holders.
+  route can ever be added, and unapproved balances are stranded. The custodian
+  can still redeem — that is the only remaining exit, since a holder cannot burn
+  their own balance. Lose the last admin *and* the custodian keys and balances
+  are both immobile and unredeemable, permanently. Keep at least two holders of
+  each role. `test/allowlist/AdminLifecycle.t.sol` pins this behaviour.
 
 ## Build & test
 

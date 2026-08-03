@@ -2,50 +2,43 @@
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 
 /// @notice How narrowly an approval applies: per-holder, per-destination,
 ///         directional, reusable, and binding on privileged roles too.
 ///         Together these pin that an edge authorises exactly one ordered pair.
 contract ScopingTest is BaseTest {
     function test_DestinationApproval_IsPerHolder() public {
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true); // alice -> bob only
+        _allow(alice, bob); // alice -> bob only
         vm.prank(minter);
         token.mint(carol, 10 ether);
 
         vm.prank(carol);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, carol, bob));
+        _expectNotAllowed(carol, bob);
         token.transfer(bob, 1 ether);
     }
 
     function test_Allowlist_IsDirectional() public {
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true);
+        _allow(alice, bob);
         assertFalse(token.allowedDestination(bob, alice), "alice->bob must not imply bob->alice");
 
         vm.prank(alice);
         token.transfer(bob, 100 ether);
 
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, bob, alice));
+        _expectNotAllowed(bob, alice);
         token.transfer(alice, 1 ether);
     }
 
     function test_Allowlist_IsPerDestination() public {
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true);
+        _allow(alice, bob);
 
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, alice, carol)
-        );
+        _expectNotAllowed(alice, carol);
         token.transfer(carol, 1 ether);
     }
 
     function test_Allowlist_EntryIsReusable() public {
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true);
+        _allow(alice, bob);
 
         vm.startPrank(alice);
         token.transfer(bob, 100 ether);
@@ -64,17 +57,15 @@ contract ScopingTest is BaseTest {
         vm.stopPrank();
 
         vm.prank(admin);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, admin, bob));
+        _expectNotAllowed(admin, bob);
         token.transfer(bob, 1 ether);
 
         vm.prank(minter);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, minter, bob));
+        _expectNotAllowed(minter, bob);
         token.transfer(bob, 1 ether);
 
         vm.prank(custodian);
-        vm.expectRevert(
-            abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, custodian, bob)
-        );
+        _expectNotAllowed(custodian, bob);
         token.transfer(bob, 1 ether);
     }
 }

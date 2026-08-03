@@ -2,13 +2,19 @@
 pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
+import { BaseTest, EdgeBuilder } from "../Base.t.sol";
 import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 import { StrandsAllowlistBatch } from "../../src/StrandsAllowlistBatch.sol";
 
 /// @notice Drives random sequences of every value-moving and allowlist-mutating
 ///         action, recording whether each SUCCESSFUL transfer was authorised at
 ///         the moment it executed.
-contract AllowlistHandler is Test {
+///
+/// @dev    Takes `EdgeBuilder` rather than the whole fixture: it is handed an
+///         already-deployed token, but builds `setPairs` arguments the same way
+///         every other suite does. `EdgeBuilder`'s members are `internal`, so
+///         this adds nothing to the fuzzer's target surface.
+contract AllowlistHandler is Test, EdgeBuilder {
     StrandsCustodyToken public immutable token;
     address public immutable admin;
     address public immutable minter;
@@ -138,15 +144,9 @@ contract AllowlistHandler is Test {
         token.mint(_actor(toSeed), amount);
     }
 
-    function burn(uint256 fromSeed, uint256 amount) external {
-        address from = _actor(fromSeed);
-        uint256 bal = token.balanceOf(from);
-        if (bal == 0) return;
-        amount = bound(amount, 1, bal);
-        vm.prank(from);
-        token.burn(amount);
-    }
-
+    /// @dev There is deliberately no holder-driven `burn` action: destruction is
+    ///      CUSTODIAN_ROLE-only, so `custodyBurn` below is the sole path by which
+    ///      this handler may reduce supply.
     function custodyBurn(uint256 fromSeed, uint256 amount) external {
         address from = _actor(fromSeed);
         uint256 bal = token.balanceOf(from);
@@ -166,22 +166,21 @@ contract AllowlistHandler is Test {
         if (allowed) _recordOpen(holder, destination);
     }
 
-    /// @dev Batched multi-pair write, so the fuzzer exercises loops of more than
-    ///      one iteration alongside the single-pair `setPairs` action.
-    function setManyDestinations(uint256 aSeed, uint256 bSeed, uint256 cSeed, bool allowed) external {
+    /// @dev Multi-pair batch, so the fuzzer exercises loops of more than one
+    ///      iteration alongside the single-pair `setPairs` action below.
+    function setManyPairs(uint256 aSeed, uint256 bSeed, uint256 cSeed, bool allowed) external {
         address a = _actor(aSeed);
         address b = _actor(bSeed);
         address c = _actor(cSeed);
 
-        StrandsAllowlistBatch.Edge[] memory edges = new StrandsAllowlistBatch.Edge[](2);
-        edges[0] = StrandsAllowlistBatch.Edge(a, b);
-        edges[1] = StrandsAllowlistBatch.Edge(b, c);
         vm.prank(admin);
-        token.setDestinations(edges, allowed);
+        token.setPairs(_edges(a, b, b, c), allowed);
 
         if (allowed) {
             _recordOpen(a, b);
+            _recordOpen(b, a);
             _recordOpen(b, c);
+            _recordOpen(c, b);
         }
     }
 
@@ -189,10 +188,8 @@ contract AllowlistHandler is Test {
         address a = _actor(aSeed);
         address b = _actor(bSeed);
 
-        StrandsAllowlistBatch.Edge[] memory pairs = new StrandsAllowlistBatch.Edge[](1);
-        pairs[0] = StrandsAllowlistBatch.Edge(a, b);
         vm.prank(admin);
-        token.setPairs(pairs, allowed);
+        token.setPairs(_edges(a, b), allowed);
 
         if (allowed) {
             _recordOpen(a, b);
@@ -207,32 +204,21 @@ contract AllowlistHandler is Test {
 ///         `test/batch/` checks a specific path; this checks that no
 ///         combination of paths — including batch mutations interleaved with
 ///         transfers — can produce an unauthorised movement.
-contract AllowlistInvariantTest is Test {
-    StrandsCustodyToken internal token;
+contract AllowlistInvariantTest is BaseTest {
     AllowlistHandler internal handler;
-
-    address internal admin = makeAddr("admin");
-    address internal minter = makeAddr("minter");
-    address internal custodian = makeAddr("custodian");
 
     address[] internal actors;
 
-    function setUp() public {
-        token = new StrandsCustodyToken(admin, 18);
+    function setUp() public override {
+        // deploy, grant MINTER_ROLE / CUSTODIAN_ROLE, and seed `alice` with
+        // INITIAL_MINT — `actors[0]` below is that same address
+        super.setUp();
 
-        vm.startPrank(admin);
-        token.grantRole(token.MINTER_ROLE(), minter);
-        token.grantRole(token.CUSTODIAN_ROLE(), custodian);
-        vm.stopPrank();
-
-        actors.push(makeAddr("alice"));
-        actors.push(makeAddr("bob"));
-        actors.push(makeAddr("carol"));
+        actors.push(alice);
+        actors.push(bob);
+        actors.push(carol);
         actors.push(makeAddr("scw1"));
         actors.push(makeAddr("scw2"));
-
-        vm.prank(minter);
-        token.mint(actors[0], 1_000 ether);
 
         handler = new AllowlistHandler(token, admin, minter, custodian, actors);
         targetContract(address(handler));

@@ -11,6 +11,10 @@ import { BaseTest } from "../Base.t.sol";
 ///         manifest would otherwise emit a wall of misleading
 ///         `DestinationAllowedSet` events, making the log useless for telling
 ///         "this route just opened" from "this route was already open".
+///
+/// @dev    Which entrypoint wrote what is exactly what is under test, so both
+///         setters are called directly rather than through the fixture's
+///         `_allow` / `_link` wrappers.
 contract IdempotencyTest is BaseTest {
     function test_ReRunningAppliedBatch_EmitsNothing() public {
         vm.prank(admin);
@@ -20,61 +24,61 @@ contract IdempotencyTest is BaseTest {
         vm.prank(admin);
         token.setPairs(_edges(alice, bob), true);
 
-        assertEq(vm.getRecordedLogs().length, 0, "re-applied batch must be silent");
+        _assertLogCount(0, "re-applied batch must be silent");
         assertTrue(token.isLinked(alice, bob), "state must be unchanged, not cleared");
     }
 
-    function test_PartiallyAppliedBatch_EmitsOnlyTheMissingEdges() public {
+    /// @dev The skip is per EDGE, not per pair: a half-linked pair completes with
+    ///      exactly one write.
+    function test_HalfLinkedPair_EmitsOnlyTheMissingDirection() public {
         vm.prank(admin);
-        token.setDestinations(_edges(alice, bob), true); // one of the two already applied
+        token.setDestinationAllowed(alice, bob, true); // one of the two legs already applied
 
         vm.recordLogs();
         vm.prank(admin);
-        token.setDestinations(_edges(alice, bob, alice, carol), true);
+        token.setPairs(_edges(alice, bob), true);
 
-        assertEq(vm.getRecordedLogs().length, 1, "only the genuinely new edge emits");
-        assertTrue(token.allowedDestination(alice, bob));
-        assertTrue(token.allowedDestination(alice, carol));
+        _assertLogCount(1, "only the genuinely new edge emits");
+        assertTrue(token.isLinked(alice, bob));
     }
 
     function test_ClosingAnAlreadyClosedEdge_EmitsNothing() public {
         vm.recordLogs();
         vm.prank(admin);
-        token.setDestinations(_edges(alice, bob, alice, carol), false); // never opened
+        token.setPairs(_edges(alice, bob, alice, carol), false); // never opened
 
-        assertEq(vm.getRecordedLogs().length, 0, "closing a closed edge is a no-op");
+        _assertLogCount(0, "closing a closed edge is a no-op");
     }
 
     /// @dev Side-by-side contrast with the single setter, so the divergence is
     ///      visible in one place rather than inferred across two suites.
     function test_SingleSetterReEmits_WhereBatchDoesNot() public {
-        vm.prank(admin);
+        vm.startPrank(admin);
         token.setDestinationAllowed(alice, bob, true);
+        token.setDestinationAllowed(bob, alice, true);
 
         vm.recordLogs();
-        vm.prank(admin);
         token.setDestinationAllowed(alice, bob, true); // redundant
-        assertEq(vm.getRecordedLogs().length, 1, "single setter re-emits by design");
+        _assertLogCount(1, "single setter re-emits by design");
 
         vm.recordLogs();
-        vm.prank(admin);
-        token.setDestinations(_edges(alice, bob), true); // same redundant write, batched
-        assertEq(vm.getRecordedLogs().length, 0, "batch path skips it");
+        token.setPairs(_edges(alice, bob), true); // same redundant writes, batched
+        _assertLogCount(0, "batch path skips them");
+        vm.stopPrank();
     }
 
-    /// @dev Skipping must not corrupt a mixed batch: untouched edges keep their
-    ///      value while genuinely-changed ones are written.
-    function test_MixedBatch_SkipsOnlyUnchangedEdges() public {
+    /// @dev Skipping must not corrupt a multi-pair batch: an already-linked pair
+    ///      is left alone while a genuinely new one is written in full.
+    function test_MultiPairBatch_SkipsOnlyTheLinkedPair() public {
         vm.startPrank(admin);
-        token.setDestinations(_edges(alice, bob), true);
+        token.setPairs(_edges(alice, bob), true);
 
         vm.recordLogs();
-        // alice->bob already true (skip), alice->carol goes false->false (skip)
-        token.setDestinationsMixed(_edges(alice, bob, alice, carol), _bools(true, false));
+        token.setPairs(_edges(alice, bob, carol, minter), true);
         vm.stopPrank();
 
-        assertEq(vm.getRecordedLogs().length, 0);
-        assertTrue(token.allowedDestination(alice, bob));
-        assertFalse(token.allowedDestination(alice, carol));
+        _assertLogCount(2, "only the new pair's 2 edges emit");
+        assertTrue(token.isLinked(alice, bob), "the applied pair is untouched, not cleared");
+        assertTrue(token.isLinked(carol, minter));
     }
 }

@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { BaseTest } from "../Base.t.sol";
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 
 /// @notice Which error wins when more than one check would fail. The allowlist
 ///         sits inside `_update`, so it fires BEFORE the balance check but
@@ -11,17 +10,16 @@ import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 contract RevertPrecedenceTest is BaseTest {
     function test_Allowlist_CheckedBeforeBalance() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, alice, bob));
+        _expectNotAllowed(alice, bob);
         token.transfer(bob, 5_000 ether); // also exceeds balance
     }
 
     function test_InsufficientBalance_StillRevertsWhenAllowlisted() public {
-        vm.prank(admin);
-        token.setDestinationAllowed(alice, bob, true);
+        _allow(alice, bob);
 
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, alice, 1_000 ether, 1_001 ether)
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, alice, INITIAL_MINT, 1_001 ether)
         );
         token.transfer(bob, 1_001 ether);
     }

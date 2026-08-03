@@ -18,8 +18,8 @@ contract SubaccountLifecycleTest is BaseTest {
         StrandsCustodyToken fresh = new StrandsCustodyToken(admin, 18);
 
         assertEq(fresh.totalSupply(), 0);
-        assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), admin));
-        assertFalse(fresh.hasRole(fresh.MINTER_ROLE(), minter), "minter must be granted explicitly");
+        assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, admin));
+        assertFalse(fresh.hasRole(MINTER_ROLE, minter), "minter must be granted explicitly");
         assertFalse(fresh.allowedDestination(alice, bob), "allowlist starts empty");
     }
 
@@ -28,7 +28,7 @@ contract SubaccountLifecycleTest is BaseTest {
     ///      user is preferred over minting to a treasury and transferring out —
     ///      the latter would need one edge per user, permanently.
     function test_Step3_MintReachesTheUserWithNoEdgesConfigured() public {
-        assertEq(token.balanceOf(alice), 1_000 ether, "funded by setUp, allowlist untouched");
+        assertEq(token.balanceOf(alice), INITIAL_MINT, "funded by setUp, allowlist untouched");
 
         vm.prank(minter);
         token.mint(carol, 500 ether);
@@ -47,8 +47,7 @@ contract SubaccountLifecycleTest is BaseTest {
     /// @dev Step 5-6. One admin transaction opens the link; value then moves
     ///      both ways, and only between those two addresses.
     function test_Step5to6_LinkThenTransferBothWays() public {
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob), true);
+        _link(alice, bob);
         assertTrue(token.isLinked(alice, bob));
 
         vm.prank(alice);
@@ -62,20 +61,23 @@ contract SubaccountLifecycleTest is BaseTest {
         assertEq(token.balanceOf(alice), 940 ether);
     }
 
-    /// @dev Redemption never needs an edge either, so a user is never trapped.
-    function test_BurnStaysAvailableThroughout() public {
+    /// @dev Redemption never needs an edge either — but it is custodian-only, so
+    ///      a user cannot exit without the custodian acting for them.
+    function test_RedemptionIsCustodianOnlyThroughout() public {
         vm.prank(alice);
+        _expectNotCustodian(alice);
         token.burn(50 ether);
+
+        vm.prank(custodian);
+        token.custodyBurn(alice, 50 ether);
         assertEq(token.balanceOf(alice), 950 ether);
         assertEq(token.totalSupply(), 950 ether);
     }
 
     /// @dev Step 7. Unlinking closes the same edge set the link opened.
     function test_Step7_RevokeClosesTheRouteAgain() public {
-        vm.startPrank(admin);
-        token.setPairs(_edges(alice, bob), true);
-        token.setPairs(_edges(alice, bob), false);
-        vm.stopPrank();
+        _link(alice, bob);
+        _unlink(alice, bob);
 
         assertFalse(token.isLinked(alice, bob));
 
@@ -93,8 +95,7 @@ contract SubaccountLifecycleTest is BaseTest {
         token.transfer(bob, 100 ether);
 
         // one transaction links the subaccount
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob), true);
+        _link(alice, bob);
 
         // value flows both ways
         vm.prank(alice);
@@ -109,19 +110,17 @@ contract SubaccountLifecycleTest is BaseTest {
         _expectNotAllowed(bob, carol);
         token.transfer(carol, 1 ether);
 
-        // redemption works regardless of routing
-        vm.prank(bob);
-        token.burn(200 ether);
+        // redemption works regardless of routing, but only the custodian may do it
+        vm.prank(custodian);
+        token.custodyBurn(bob, 200 ether);
         assertEq(token.balanceOf(bob), 0);
 
-        // custody redemption too
         vm.prank(custodian);
         token.custodyBurn(alice, 800 ether);
         assertEq(token.totalSupply(), 0);
 
         // offboarding closes the link
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob), false);
+        _unlink(alice, bob);
         assertFalse(token.isLinked(alice, bob));
     }
 
@@ -135,7 +134,7 @@ contract SubaccountLifecycleTest is BaseTest {
         vm.prank(admin);
         token.setPairs(_edges(alice, bob, carol, minter), true);
 
-        assertEq(vm.getRecordedLogs().length, 4, "2 links x 2 edges each");
+        _assertLogCount(4, "2 links x 2 edges each");
         assertTrue(token.isLinked(alice, bob));
         assertTrue(token.isLinked(carol, minter));
 
