@@ -23,7 +23,7 @@ contract RolesTest is BaseTest {
 
     function test_Constructor_RevertsOnZeroAdmin() public {
         vm.expectRevert(bytes("admin=0"));
-        new StrandsCustodyToken(address(0), 18);
+        new StrandsCustodyToken(address(0), 18, NAME, SYMBOL);
     }
 
     /// @dev The constructor grants the admin role and nothing else. An admin
@@ -31,7 +31,7 @@ contract RolesTest is BaseTest {
     ///      mint or burn with no visible grant, which is the whole point of
     ///      keeping the roles separate.
     function test_Constructor_GrantsTheAdminRoleAndNothingElse() public {
-        StrandsCustodyToken fresh = new StrandsCustodyToken(admin, 18);
+        StrandsCustodyToken fresh = new StrandsCustodyToken(admin, 18, NAME, SYMBOL);
 
         assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), admin));
         assertFalse(fresh.hasRole(fresh.MINTER_ROLE(), admin), "admin must not arrive as a minter");

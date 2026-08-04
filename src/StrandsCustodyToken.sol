@@ -5,7 +5,7 @@ import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC20Burnable } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 
-/// @title  Strands Custody Token (SCT)
+/// @title  Strands Custody Token
 /// @notice ERC20 token where a balance is a claim against an off-chain ledger,
 ///         so destroying supply is CUSTODIAN_ROLE-only. That covers the whole
 ///         burn surface — the inherited `burn` / `burnFrom` are gated exactly
@@ -29,8 +29,16 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
 
     /// @param admin     Address that will receive DEFAULT_ADMIN_ROLE.
     /// @param decimals_ Native decimals of the custodied asset; returned by `decimals()`.
-    constructor(address admin, uint8 decimals_) ERC20("Strands Custody Token", "SCT") {
+    /// @param name_     ERC20 name. Per-deployment rather than baked in, so one token is distinguishable from the
+    ///                  next on an explorer: the backend composes asset + custodian, e.g. "Strands Custody USDC
+    ///                  (BitGo)". It identifies the ASSET and CUSTODIAN only — never the holder.
+    /// @param symbol_   ERC20 symbol, likewise per-deployment, e.g. "scUSDC".
+    constructor(address admin, uint8 decimals_, string memory name_, string memory symbol_) ERC20(name_, symbol_) {
         require(admin != address(0), "admin=0");
+        // Empty metadata is UNRECOVERABLE: there is no setter, so the token would be permanently anonymous and the
+        // only remedy is redeploy-and-re-mint. Reverting the deploy is the cheap end of that trade.
+        require(bytes(name_).length != 0, "name=0");
+        require(bytes(symbol_).length != 0, "symbol=0");
         _decimals = decimals_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }

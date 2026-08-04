@@ -11,6 +11,16 @@
         "name": "decimals_",
         "type": "uint8",
         "internalType": "uint8"
+      },
+      {
+        "name": "name_",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "symbol_",
+        "type": "string",
+        "internalType": "string"
       }
     ],
     "stateMutability": "nonpayable"
