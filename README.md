@@ -147,18 +147,21 @@ forge test -vvv
 ```bash
 export ADMIN_ADDRESS=0x...
 export DEPLOYER_PRIVATE_KEY=0x...
-export DECIMALS=6                              # optional, defaults to 18
-export TOKEN_NAME="Strands Custody USDC (BitGo)"   # required, no default
-export TOKEN_SYMBOL="scUSDC"                       # required, no default
+export DECIMALS=6                                  # optional, defaults to 18
+export TOKEN_NAME="Strands Custody USDC (BitGo)"   # optional, defaults to "Strands Custody Token"
+export TOKEN_SYMBOL="scUSDC"                       # optional, defaults to "SCT"
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --broadcast \
   --verify
 ```
 
-`TOKEN_NAME` and `TOKEN_SYMBOL` have no defaults, unlike `DECIMALS`: the label is
-permanent, and a deploy that silently picks a generic one is the failure this
-argument exists to prevent. The script reverts if either is unset.
+**Set `TOKEN_NAME` and `TOKEN_SYMBOL`.** They default to `Strands Custody Token` /
+`SCT` — the pair every token carried before this contract took them as arguments —
+so a deploy never fails or produces a nameless token for want of an environment
+variable. But the label is permanent, and taking the default gives you a token
+indistinguishable from every other one on an explorer, which is the whole thing
+these arguments exist to fix.
 
 After deployment, the admin grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to the
 intended operator addresses with `grantRole`.
