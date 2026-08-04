@@ -145,7 +145,8 @@ contract CustodyBurnTest is BaseTest {
     ///      no allowance, so it cannot distinguish "role required" from "role OR
     ///      allowance required". An unlimited approval must not be a second key
     ///      into the burn surface — it is not one for `burnFrom`
-    ///      (`BurnAuthority.t.sol:38-49`) and must not become one here.
+    ///      (`BurnAuthority.t.sol:test_Holder_CannotBurnFromEvenWithAllowance`)
+    ///      and must not become one here.
     function test_NonCustodian_CannotCustodyBurn_EvenWithMaxAllowance() public {
         vm.prank(alice);
         token.approve(bob, type(uint256).max);

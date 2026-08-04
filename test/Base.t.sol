@@ -53,16 +53,9 @@ abstract contract BaseTest is Test {
 
     // ---------- revert expectations ----------
 
-    /// @dev The `AccessControlUnauthorizedAccount` payload as raw bytes, for
-    ///      tests that compare a low-level call's return data byte-for-byte
-    ///      instead of going through a cheatcode.
-    function _missingRoleData(address caller, bytes32 role) internal pure returns (bytes memory) {
-        return abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, caller, role);
-    }
-
     /// @dev Expect the next call to be rejected for lacking `role`.
     function _expectMissingRole(address caller, bytes32 role) internal {
-        vm.expectRevert(_missingRoleData(caller, role));
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, caller, role));
     }
 
     function _expectNotAdmin(address caller) internal {
