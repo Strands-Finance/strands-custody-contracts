@@ -49,6 +49,10 @@ contract ScopingTest is BaseTest {
         assertEq(token.balanceOf(bob), 200 ether);
     }
 
+    /// @dev No role buys a way around the allowlist ON THE TRANSFER PATH. The
+    ///      admin's ability to move a balance is a separate entrypoint,
+    ///      `adminTransfer`, not an exemption bolted onto `transfer` — see
+    ///      `test/allowlist/AdminTransfer.t.sol`. The two do not contradict.
     function test_PrivilegedRoles_AreNotExemptFromAllowlist() public {
         vm.startPrank(minter);
         token.mint(admin, 10 ether);

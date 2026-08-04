@@ -155,4 +155,201 @@ contract AdminLifecycleTest is BaseTest {
         assertEq(token.balanceOf(alice), 0);
         assertEq(token.totalSupply(), 0);
     }
+
+    // ---------- rotation: the handover that does NOT brick anything ----------
+    //
+    // Everything above is the failure mode. These are the success mode: a
+    // deliberate handover from one admin to another, which is routine key
+    // hygiene and sits one ordering mistake away from the permanent brick.
+    //
+    // The `_allow` / `_link` helpers in `Base.t.sol` prank as `admin`, so they
+    // are unusable once `admin` has been rotated out — post-handover writes call
+    // the setters directly, which also keeps the acting admin visible at the call
+    // site. A locally declared `newAdmin` keeps admin identity from colliding
+    // with holder identity in an assertion, and leaves the fixture's single-admin
+    // invariant (see the contract docstring) untouched.
+
+    /// @dev The positive control for `test_RenouncedAdmin_IsUnrecoverableByAnyParty`.
+    ///      Granting the successor BEFORE revoking the predecessor is what makes a
+    ///      rotation safe; the reverse order is the lockout the tests above pin.
+    ///
+    ///      All five admin powers are exercised, not just the allowlist setter.
+    ///      `test_RevokedAdmin_CannotSetDestination` checks only
+    ///      `setDestinationAllowed`, so a rotation that silently stranded
+    ///      `adminTransfer` or `grantRole` would pass the suite — and those two
+    ///      are the least likely to be missed until the moment they are needed.
+    function test_AdminHandover_SuccessorHoldsEveryAdminPower() public {
+        address newAdmin = makeAddr("newAdmin");
+
+        vm.prank(admin);
+        token.grantRole(DEFAULT_ADMIN_ROLE, newAdmin);
+
+        // the overlap window: both are live, and either may act
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin), "predecessor still holds the role mid-rotation");
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, newAdmin), "successor holds it too");
+        vm.prank(admin);
+        token.setDestinationAllowed(carol, bob, true);
+        vm.prank(newAdmin);
+        token.setDestinationAllowed(carol, bob, false);
+        assertFalse(token.allowedDestination(carol, bob), "either admin may write during the overlap");
+
+        vm.prank(newAdmin);
+        token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
+
+        // the successor holds every admin power
+        vm.startPrank(newAdmin);
+        token.setDestinationAllowed(alice, bob, true);
+        token.setLink(bob, carol, true);
+        token.adminTransfer(alice, carol, 100 ether); // alice -> carol is CLOSED: the bypass still works
+        token.grantRole(MINTER_ROLE, carol);
+        token.revokeRole(MINTER_ROLE, carol);
+        vm.stopPrank();
+
+        assertTrue(token.allowedDestination(alice, bob), "successor can write a single edge");
+        assertTrue(_isLinked(bob, carol), "successor can write both edges of a link");
+        assertFalse(token.allowedDestination(alice, carol), "adminTransfer still opens no edge");
+        assertEq(token.balanceOf(carol), 100 ether, "successor can move a balance out of band");
+        assertFalse(token.hasRole(MINTER_ROLE, carol), "successor can grant and revoke other roles");
+        assertEq(token.totalSupply(), INITIAL_MINT, "rotation and adminTransfer must not move supply");
+
+        // ...and the predecessor holds none of them
+        vm.startPrank(admin);
+        _expectNotAdmin(admin);
+        token.setDestinationAllowed(alice, carol, true);
+        _expectNotAdmin(admin);
+        token.setLink(alice, bob, true);
+        _expectNotAdmin(admin);
+        token.adminTransfer(alice, bob, 1 ether);
+        _expectNotAdmin(admin);
+        token.grantRole(CUSTODIAN_ROLE, bob);
+        _expectNotAdmin(admin);
+        token.revokeRole(CUSTODIAN_ROLE, custodian);
+        vm.stopPrank();
+
+        assertTrue(token.hasRole(CUSTODIAN_ROLE, custodian), "a stripped admin cannot dismantle the role graph");
+    }
+
+    /// @dev Rotation is a change of key, not of policy: entries written by the
+    ///      outgoing admin survive it and — unlike
+    ///      `test_RenouncedAdmin_PreExistingApprovalsKeepWorking`, where they
+    ///      become irrevocable — remain closeable by the successor.
+    function test_AdminHandover_PreservesAllowlistStateAndKeepsItRevocable() public {
+        address newAdmin = makeAddr("newAdmin");
+        _link(alice, bob); // written by the outgoing admin
+
+        vm.prank(admin);
+        token.grantRole(DEFAULT_ADMIN_ROLE, newAdmin);
+        vm.prank(newAdmin);
+        token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
+
+        assertTrue(_isLinked(alice, bob), "rotation must not clear the allowlist");
+
+        vm.prank(alice);
+        token.transfer(bob, 100 ether);
+        assertEq(token.balanceOf(bob), 100 ether, "an approved route survives the handover");
+
+        vm.prank(newAdmin);
+        token.setLink(alice, bob, false);
+
+        vm.prank(alice);
+        _expectNotAllowed(alice, bob);
+        token.transfer(bob, 1 ether);
+        assertEq(token.totalSupply(), INITIAL_MINT, "no supply moved across the whole rotation");
+    }
+
+    /// @dev An admin rotation is scoped to DEFAULT_ADMIN_ROLE. Incumbent minters
+    ///      and custodians keep working across it — and the successor may be an
+    ///      address that already holds one of those roles, since AccessControl
+    ///      roles stack rather than displace.
+    function test_AdminHandover_LeavesOtherRolesIntact_AndSuccessorMayStackRoles() public {
+        vm.prank(admin);
+        token.grantRole(DEFAULT_ADMIN_ROLE, custodian); // the successor is an existing role holder
+        vm.prank(custodian);
+        token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
+
+        assertTrue(token.hasRole(CUSTODIAN_ROLE, custodian), "gaining admin must not displace the existing role");
+        assertTrue(token.hasRole(MINTER_ROLE, minter), "an unrelated role holder is untouched by the rotation");
+
+        vm.prank(minter);
+        token.mint(alice, 50 ether);
+        vm.prank(custodian);
+        token.custodyBurn(alice, 50 ether);
+        assertEq(token.totalSupply(), INITIAL_MINT, "both incumbents still work after the rotation");
+
+        // ...and the stacked successor wields both sets of powers
+        vm.startPrank(custodian);
+        token.adminTransfer(alice, bob, 10 ether);
+        token.custodyBurn(bob, 10 ether);
+        vm.stopPrank();
+        assertEq(token.totalSupply(), INITIAL_MINT - 10 ether);
+    }
+
+    /// @dev The self-exit variant: the predecessor renounces rather than being
+    ///      revoked. Same end state, different entrypoint — and the one an
+    ///      operator is most likely to use, since it needs no cooperation from the
+    ///      successor. Compare `test_RevokingLastAdmin_ReachesSameDeadStateAsRenounce`
+    ///      for the version with no successor in place.
+    function test_AdminHandover_ViaRenounce_IsEquivalent() public {
+        address newAdmin = makeAddr("newAdmin");
+
+        vm.prank(admin);
+        token.grantRole(DEFAULT_ADMIN_ROLE, newAdmin);
+        vm.prank(admin);
+        token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
+
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, newAdmin));
+
+        vm.prank(newAdmin);
+        token.setLink(alice, bob, true);
+        assertTrue(_isLinked(alice, bob), "renouncing with a successor in place is not a freeze");
+
+        vm.prank(admin);
+        _expectNotAdmin(admin);
+        token.setLink(alice, carol, true);
+    }
+
+    /// @dev The footgun guard on the renounce path. `renounceRole` takes a
+    ///      confirmation argument precisely so an operator cannot renounce on
+    ///      someone else's behalf by passing the wrong address — the exact slip
+    ///      available mid-rotation, when both addresses are in hand.
+    function test_RenounceRole_RejectsMismatchedConfirmation() public {
+        address newAdmin = makeAddr("newAdmin");
+        vm.prank(admin);
+        token.grantRole(DEFAULT_ADMIN_ROLE, newAdmin);
+
+        vm.prank(admin);
+        _expectBadConfirmation();
+        token.renounceRole(DEFAULT_ADMIN_ROLE, newAdmin); // meant `admin`
+
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin), "a mismatched confirmation is a no-op");
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, newAdmin), "and must not strip the address named instead");
+    }
+
+    /// @dev Rotation is not a one-shot. Nothing about the first handover consumes
+    ///      a resource the second one needs, so the key can keep moving for the
+    ///      life of the contract.
+    function test_AdminRotation_CanBeRepeated() public {
+        address[3] memory chain = [makeAddr("admin2"), makeAddr("admin3"), makeAddr("admin4")];
+        address current = admin;
+
+        for (uint256 i = 0; i < chain.length; i++) {
+            vm.prank(current);
+            token.grantRole(DEFAULT_ADMIN_ROLE, chain[i]);
+            vm.prank(chain[i]);
+            token.revokeRole(DEFAULT_ADMIN_ROLE, current);
+
+            assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, current), "each predecessor is stripped in turn");
+            current = chain[i];
+
+            vm.prank(current);
+            token.setDestinationAllowed(alice, bob, i % 2 == 0);
+            assertEq(token.allowedDestination(alice, bob), i % 2 == 0, "each successor holds full write access");
+        }
+
+        vm.prank(current);
+        token.adminTransfer(alice, carol, 1 ether);
+        assertEq(token.balanceOf(carol), 1 ether, "the final admin in the chain is fully operational");
+    }
 }

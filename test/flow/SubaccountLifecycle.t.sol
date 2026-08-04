@@ -8,10 +8,17 @@ import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 ///         narrative: deploy -> grant -> mint -> (blocked) -> link -> transfer
 ///         both ways -> burn -> revoke -> (blocked again).
 ///
-///         Read `alice` as the user's main address and `bob` as their smart
-///         contract wallet; from the token's perspective an SCW is just another
-///         address.
+///         This suite IS the README runbook. Every `cast` invocation in the
+///         "Operating the allowlist" section has a step here, so the documented
+///         sequence is proven by the test suite rather than by hand.
+///
+///         The subaccount reading — `alice` as someone's main address, `bob` as
+///         their smart contract wallet — is the motivating case and lives here
+///         deliberately. The contract has no such concept: to it these are two
+///         addresses with two edges between them.
 contract SubaccountLifecycleTest is BaseTest {
+    address internal stranger = makeAddr("stranger");
+
     /// @dev Step 1-2. A freshly deployed token has no supply and an empty
     ///      allowlist — nothing can move until both are seeded.
     function test_Step1_FreshDeployHasNoSupplyAndNoRoutes() public {
@@ -37,7 +44,7 @@ contract SubaccountLifecycleTest is BaseTest {
 
     /// @dev Step 4. Default-deny: a funded user still cannot reach their SCW.
     function test_Step4_TransferToSubaccountIsBlockedBeforeLinking() public {
-        assertFalse(token.isLinked(alice, bob));
+        assertFalse(_isLinked(alice, bob));
 
         vm.prank(alice);
         _expectNotAllowed(alice, bob);
@@ -48,7 +55,11 @@ contract SubaccountLifecycleTest is BaseTest {
     ///      both ways, and only between those two addresses.
     function test_Step5to6_LinkThenTransferBothWays() public {
         _link(alice, bob);
-        assertTrue(token.isLinked(alice, bob));
+
+        // the two directed reads the runbook prescribes in place of a link view
+        assertTrue(token.allowedDestination(alice, bob), "user -> subaccount");
+        assertTrue(token.allowedDestination(bob, alice), "subaccount -> user");
+        assertTrue(_isLinked(alice, bob));
 
         vm.prank(alice);
         token.transfer(bob, 100 ether);
@@ -79,7 +90,7 @@ contract SubaccountLifecycleTest is BaseTest {
         _link(alice, bob);
         _unlink(alice, bob);
 
-        assertFalse(token.isLinked(alice, bob));
+        assertFalse(_isLinked(alice, bob));
 
         vm.prank(alice);
         _expectNotAllowed(alice, bob);
@@ -110,10 +121,18 @@ contract SubaccountLifecycleTest is BaseTest {
         _expectNotAllowed(bob, carol);
         token.transfer(carol, 1 ether);
 
+        // the admin escape hatch reaches where the holder cannot, without
+        // opening a route the holder could then reuse
+        vm.prank(admin);
+        token.adminTransfer(bob, carol, 200 ether);
+        assertEq(token.balanceOf(bob), 0);
+        assertEq(token.balanceOf(carol), 200 ether);
+        assertFalse(token.allowedDestination(bob, carol), "the route stays closed to the holder");
+
         // redemption works regardless of routing, but only the custodian may do it
         vm.prank(custodian);
-        token.custodyBurn(bob, 200 ether);
-        assertEq(token.balanceOf(bob), 0);
+        token.custodyBurn(carol, 200 ether);
+        assertEq(token.balanceOf(carol), 0);
 
         vm.prank(custodian);
         token.custodyBurn(alice, 800 ether);
@@ -121,22 +140,24 @@ contract SubaccountLifecycleTest is BaseTest {
 
         // offboarding closes the link
         _unlink(alice, bob);
-        assertFalse(token.isLinked(alice, bob));
+        assertFalse(_isLinked(alice, bob));
     }
 
-    /// @dev Linking many users in a single transaction is the operational point
-    ///      of the batch surface.
-    function test_ManySubaccountsLinkedInOneTransaction() public {
+    /// @dev Onboarding several users is one `setLink` per user, and the links
+    ///      stay independent of one another.
+    function test_ManySubaccountsLinkedOneCallEach() public {
         vm.prank(minter);
         token.mint(carol, 100 ether);
 
         vm.recordLogs();
-        vm.prank(admin);
-        token.setPairs(_edges(alice, bob, carol, minter), true);
+        vm.startPrank(admin);
+        token.setLink(alice, bob, true);
+        token.setLink(carol, minter, true);
+        vm.stopPrank();
 
         _assertLogCount(4, "2 links x 2 edges each");
-        assertTrue(token.isLinked(alice, bob));
-        assertTrue(token.isLinked(carol, minter));
+        assertTrue(_isLinked(alice, bob));
+        assertTrue(_isLinked(carol, minter));
 
         vm.prank(alice);
         token.transfer(bob, 10 ether);
@@ -144,5 +165,39 @@ contract SubaccountLifecycleTest is BaseTest {
         token.transfer(minter, 10 ether);
         assertEq(token.balanceOf(bob), 10 ether);
         assertEq(token.balanceOf(minter), 10 ether);
+    }
+
+    /// @dev Linking a user to themselves is rejected, so the runbook cannot
+    ///      accidentally open a self-route by passing the same address twice.
+    function test_SelfLinkIsRejected() public {
+        vm.prank(admin);
+        vm.expectRevert("self-link");
+        token.setLink(alice, alice, true);
+
+        assertFalse(token.allowedDestination(alice, alice));
+    }
+
+    /// @dev The admin escape hatch, end to end: value reaches an address the
+    ///      user was never approved to pay, the allowlist is untouched by it,
+    ///      and supply does not move.
+    function test_AdminTransferReachesAnAddressWithNoRouteInEitherDirection() public {
+        assertFalse(token.allowedDestination(alice, stranger), "precondition: closed both ways");
+        assertFalse(token.allowedDestination(stranger, alice));
+        uint256 supplyBefore = token.totalSupply();
+
+        vm.prank(alice);
+        _expectNotAllowed(alice, stranger);
+        token.transfer(stranger, 100 ether); // the holder cannot get there...
+
+        vm.prank(admin);
+        token.adminTransfer(alice, stranger, 100 ether); // ...the admin can
+
+        assertEq(token.balanceOf(stranger), 100 ether);
+        assertEq(token.balanceOf(alice), INITIAL_MINT - 100 ether);
+        assertEq(token.totalSupply(), supplyBefore, "moving value must never change supply");
+
+        // and the route the admin used is still closed to the holder
+        assertFalse(token.allowedDestination(alice, stranger), "no edge may be implicitly created");
+        assertFalse(token.allowedDestination(stranger, alice));
     }
 }

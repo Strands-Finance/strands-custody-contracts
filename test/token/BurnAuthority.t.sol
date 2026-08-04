@@ -3,10 +3,9 @@ pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Destruction of supply is CUSTODIAN_ROLE-only. A holder — including a
-///         smart contract wallet and every subaccount linked to it — has exactly
-///         one capability: transferring along the routes the admin opened for
-///         them. They cannot destroy their own balance, and they cannot delegate
+/// @notice Destruction of supply is CUSTODIAN_ROLE-only. Every holder, however
+///         they were reached, has exactly one capability: transferring along the
+///         routes the admin opened for them. They cannot destroy their own balance, and they cannot delegate
 ///         that power to anyone else via an ERC20 allowance. Both inherited
 ///         `ERC20Burnable` entrypoints are gated alongside `custodyBurn`, so
 ///         every redemption goes through the custodian and stays in step with
@@ -62,9 +61,9 @@ contract BurnAuthorityTest is BaseTest {
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
-    /// @dev A linked subaccount is just another holder — being reachable from the
+    /// @dev A linked address is just another holder — being reachable from the
     ///      main wallet grants it no additional power.
-    function test_Subaccount_CannotBurnOwnBalance() public {
+    function test_LinkedHolder_CannotBurnOwnBalance() public {
         _link(alice, bob);
         vm.prank(alice);
         token.transfer(bob, 300 ether);
@@ -73,12 +72,15 @@ contract BurnAuthorityTest is BaseTest {
         _expectNotCustodian(bob);
         token.burn(300 ether);
 
-        assertEq(token.balanceOf(bob), 300 ether, "subaccount balance must be untouched");
+        assertEq(token.balanceOf(bob), 300 ether, "linked holder balance must be untouched");
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
     /// @dev Holding some other role is not a shortcut into the burn surface,
-    ///      mirroring `test/batch/Auth.t.sol::test_MinterAndCustodian_CannotBatch`.
+    ///      mirroring
+    ///      `test/allowlist/SetLinkAuth.t.sol::test_MinterAndCustodian_CannotSetLink`.
+    ///      Note the admin's reach stops here: `adminTransfer` can redirect a
+    ///      balance but never destroy one.
     function test_MinterAndAdmin_CannotBurn() public {
         // fund both, so a failure cannot be explained by an empty balance
         vm.startPrank(minter);

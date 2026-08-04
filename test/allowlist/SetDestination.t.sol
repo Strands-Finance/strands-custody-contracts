@@ -4,9 +4,10 @@ pragma solidity ^0.8.24;
 import { BaseTest } from "../Base.t.sol";
 
 /// @notice The single-edge setter: who may call it, what it emits, and that a
-///         redundant write still emits. That last property is deliberate and is
-///         what the batch paths intentionally diverge from — see
-///         `test/batch/Idempotency.t.sol`.
+///         redundant write still emits. That last property is deliberate — the
+///         event log records what the admin asserted, not only what changed.
+///         `setLink` behaves the same way, two edges at a time; see
+///         `test/allowlist/SetLink.t.sol`.
 ///
 /// @dev    `setDestinationAllowed` is the subject here, so it is called directly
 ///         rather than through the fixture's `_allow` / `_disallow` wrappers.

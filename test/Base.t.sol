@@ -4,28 +4,6 @@ pragma solidity ^0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
-import { StrandsAllowlistBatch } from "../src/StrandsAllowlistBatch.sol";
-
-/// @title  Edge array literals for `setPairs` / `areAllowed`
-/// @notice Split out of `BaseTest` so the invariant handler — which drives the
-///         token directly rather than through the fixture — builds its batch
-///         arguments the same way every other suite does.
-abstract contract EdgeBuilder {
-    function _edges(address h, address d) internal pure returns (StrandsAllowlistBatch.Edge[] memory e) {
-        e = new StrandsAllowlistBatch.Edge[](1);
-        e[0] = StrandsAllowlistBatch.Edge(h, d);
-    }
-
-    function _edges(address h1, address d1, address h2, address d2)
-        internal
-        pure
-        returns (StrandsAllowlistBatch.Edge[] memory e)
-    {
-        e = new StrandsAllowlistBatch.Edge[](2);
-        e[0] = StrandsAllowlistBatch.Edge(h1, d1);
-        e[1] = StrandsAllowlistBatch.Edge(h2, d2);
-    }
-}
 
 /// @title  Shared test fixture
 /// @notice Deploys the token, wires MINTER_ROLE / CUSTODIAN_ROLE and funds
@@ -33,7 +11,7 @@ abstract contract EdgeBuilder {
 ///         so the starting state is identical across files.
 /// @dev    The allowlist starts EMPTY, which makes every inherited test double
 ///         as a regression test for the default-deny behavior.
-abstract contract BaseTest is Test, EdgeBuilder {
+abstract contract BaseTest is Test {
     StrandsCustodyToken internal token;
 
     address internal admin = makeAddr("admin");
@@ -58,6 +36,7 @@ abstract contract BaseTest is Test, EdgeBuilder {
 
     event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
     event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
+    event AdminTransfer(address indexed admin, address indexed from, address indexed to, uint256 amount);
     event Transfer(address indexed from, address indexed to, uint256 value);
 
     function setUp() public virtual {
@@ -79,9 +58,9 @@ abstract contract BaseTest is Test, EdgeBuilder {
     // ---------- allowlist arrangement (admin-pranked) ----------
     //
     // These wrap ARRANGEMENT only. Suites where the setter itself is the subject
-    // under test — `allowlist/SetDestination.t.sol`, `batch/BatchLink.t.sol`,
-    // `batch/Idempotency.t.sol` — keep calling the entrypoints directly, so what
-    // is being asserted about stays visible at the call site.
+    // under test — `allowlist/SetDestination.t.sol`, `allowlist/SetLink.t.sol` —
+    // keep calling the entrypoints directly, so what is being asserted about
+    // stays visible at the call site.
 
     /// @dev Open one directed edge.
     function _allow(address holder, address destination) internal {
@@ -98,13 +77,22 @@ abstract contract BaseTest is Test, EdgeBuilder {
     /// @dev Open both directions between `a` and `b` — one link, two edges.
     function _link(address a, address b) internal {
         vm.prank(admin);
-        token.setPairs(_edges(a, b), true);
+        token.setLink(a, b, true);
     }
 
     /// @dev Close both directions between `a` and `b`.
     function _unlink(address a, address b) internal {
         vm.prank(admin);
-        token.setPairs(_edges(a, b), false);
+        token.setLink(a, b, false);
+    }
+
+    // ---------- allowlist reads ----------
+
+    /// @dev Both directions open between `a` and `b`. Derived rather than
+    ///      stored: the token exposes only the directed `allowedDestination`
+    ///      mapping, so a link is two reads.
+    function _isLinked(address a, address b) internal view returns (bool) {
+        return token.allowedDestination(a, b) && token.allowedDestination(b, a);
     }
 
     // ---------- revert expectations ----------
@@ -140,6 +128,12 @@ abstract contract BaseTest is Test, EdgeBuilder {
         _expectMissingRole(caller, CUSTODIAN_ROLE);
     }
 
+    /// @dev Expect `renounceRole` to be rejected for a confirmation argument that
+    ///      is not the caller. The one AccessControl error no role gate reaches.
+    function _expectBadConfirmation() internal {
+        vm.expectRevert(IAccessControl.AccessControlBadConfirmation.selector);
+    }
+
     // ---------- event expectations ----------
 
     /// @dev `by` rather than `custodian` — the fixture already binds that name.
@@ -151,6 +145,12 @@ abstract contract BaseTest is Test, EdgeBuilder {
     function _expectDestinationAllowedSetEvent(address holder, address destination, bool allowed) internal {
         vm.expectEmit(true, true, false, true, address(token));
         emit DestinationAllowedSet(holder, destination, allowed);
+    }
+
+    /// @dev `by` rather than `admin` — the fixture already binds that name.
+    function _expectAdminTransferEvent(address by, address from, address to, uint256 amount) internal {
+        vm.expectEmit(true, true, true, true, address(token));
+        emit AdminTransfer(by, from, to, amount);
     }
 
     function _expectTransferEvent(address from, address to, uint256 value) internal {

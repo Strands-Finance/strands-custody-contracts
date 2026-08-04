@@ -3,19 +3,20 @@ pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Which `from -> to` transfers the contract permits for one user, in the
-///         shape it actually deploys in: a smart contract wallet with TWO linked
-///         subaccounts, alongside a second user's wallet and subaccount and an
-///         unrelated stranger.
+/// @notice The subaccount use case, spelled out concretely — a wallet with TWO
+///         linked subaccounts, a second wallet and subaccount, and an unrelated
+///         stranger. Naming the use case is deliberate HERE and nowhere else:
+///         the contract knows only addresses and edges, and the rest of the
+///         suite is written that way.
 ///
-///         Two subaccounts is the minimum shape that can express the sibling
-///         rule — `sub1 -> sub2` must stay closed even though both are linked to
-///         the same wallet, because `setPairs` opens exactly the two edges it
-///         names and nothing else. The suites in `test/allowlist/` verify edges
-///         one at a time; this verifies that a fully provisioned world still
-///         leaks nothing.
+///         Two subaccounts is the minimum shape that can express
+///         non-transitivity — `sub1 -> sub2` must stay closed even though both
+///         are linked to the same wallet, because `setLink` opens exactly the
+///         two edges it names. The suites in `test/allowlist/` verify edges one
+///         at a time; this verifies that a fully provisioned world still leaks
+///         nothing.
 ///
-///         `allowedDestination` after one `setPairs` call per user:
+///         `allowedDestination` after one `setLink` call per pair:
 ///
 ///              ┌──────┐        ┌────────┐        ┌──────┐
 ///              │ sub1 │◄──────►│ wallet │◄──────►│ sub2 │
@@ -39,10 +40,11 @@ contract SubaccountTransfersTest is BaseTest {
         token.mint(otherWallet, INITIAL_MINT);
         vm.stopPrank();
 
-        // one linking transaction per user, exactly as the README runbook describes
+        // one linking call per subaccount, exactly as the README runbook describes
         vm.startPrank(admin);
-        token.setPairs(_edges(wallet, sub1, wallet, sub2), true);
-        token.setPairs(_edges(otherWallet, otherSub), true);
+        token.setLink(wallet, sub1, true);
+        token.setLink(wallet, sub2, true);
+        token.setLink(otherWallet, otherSub, true);
         vm.stopPrank();
     }
 
@@ -56,8 +58,8 @@ contract SubaccountTransfersTest is BaseTest {
     }
 
     function test_Wallet_CanTransferToAndFromEverySubaccount() public {
-        assertTrue(token.isLinked(wallet, sub1));
-        assertTrue(token.isLinked(wallet, sub2));
+        assertTrue(_isLinked(wallet, sub1));
+        assertTrue(_isLinked(wallet, sub2));
 
         _fundSubaccounts(100 ether);
         assertEq(token.balanceOf(sub1), 100 ether);

@@ -56,6 +56,29 @@
   },
   {
     "type": "function",
+    "name": "adminTransfer",
+    "inputs": [
+      {
+        "name": "from",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "allowance",
     "inputs": [
       {
@@ -125,37 +148,6 @@
       }
     ],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "areAllowed",
-    "inputs": [
-      {
-        "name": "edges",
-        "type": "tuple[]",
-        "internalType": "struct StrandsAllowlistBatch.Edge[]",
-        "components": [
-          {
-            "name": "holder",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "destination",
-            "type": "address",
-            "internalType": "address"
-          }
-        ]
-      }
-    ],
-    "outputs": [
-      {
-        "name": "out",
-        "type": "bool[]",
-        "internalType": "bool[]"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -301,30 +293,6 @@
   },
   {
     "type": "function",
-    "name": "isLinked",
-    "inputs": [
-      {
-        "name": "user",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "sub",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "mint",
     "inputs": [
       {
@@ -415,24 +383,17 @@
   },
   {
     "type": "function",
-    "name": "setPairs",
+    "name": "setLink",
     "inputs": [
       {
-        "name": "pairs",
-        "type": "tuple[]",
-        "internalType": "struct StrandsAllowlistBatch.Edge[]",
-        "components": [
-          {
-            "name": "holder",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "destination",
-            "type": "address",
-            "internalType": "address"
-          }
-        ]
+        "name": "holder",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "destination",
+        "type": "address",
+        "internalType": "address"
       },
       {
         "name": "allowed",
@@ -540,6 +501,37 @@
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "AdminTransfer",
+    "inputs": [
+      {
+        "name": "admin",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",

@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC20Burnable } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
-import { StrandsAllowlistBatch } from "./StrandsAllowlistBatch.sol";
 
 /// @title  Strands Custody Token (SCT)
 /// @notice ERC20 token where a balance is a claim against an off-chain ledger,
@@ -15,9 +14,9 @@ import { StrandsAllowlistBatch } from "./StrandsAllowlistBatch.sol";
 ///         ERC20 allowance.
 ///         Holder-to-holder transfers are default-deny: a holder may only
 ///         transfer to destinations the admin has approved for that holder.
-///         Linking a user to their subaccounts is one call in
-///         {StrandsAllowlistBatch}.
-contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBatch {
+///         The admin can move any balance regardless of the allowlist via
+///         {adminTransfer}.
+contract StrandsCustodyToken is ERC20Burnable, AccessControl {
     bytes32 public constant CUSTODIAN_ROLE = keccak256("CUSTODIAN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
@@ -39,6 +38,13 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBa
     /// @notice Emitted when the admin allows or disallows a transfer
     ///         destination for a holder.
     event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
+
+    /// @notice Emitted when an admin moves a balance without the holder's
+    ///         consent.
+    /// @dev    {adminTransfer} also emits the standard ERC20 {Transfer}, which
+    ///         is indistinguishable from an ordinary one, so a reconciler that
+    ///         needs to tell the two apart must subscribe to this.
+    event AdminTransfer(address indexed admin, address indexed from, address indexed to, uint256 amount);
 
     /// @notice Thrown when `holder` attempts a transfer to a `destination`
     ///         the admin has not approved for them.
@@ -91,7 +97,7 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBa
     }
 
     /// @notice Allow or disallow `holder` to transfer tokens to `destination`.
-    ///         Restricted to DEFAULT_ADMIN_ROLE.
+    ///         One directed edge. Restricted to DEFAULT_ADMIN_ROLE.
     function setDestinationAllowed(address holder, address destination, bool allowed)
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -99,23 +105,39 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, StrandsAllowlistBa
         _setDestinationAllowed(holder, destination, allowed);
     }
 
-    /// @dev {StrandsAllowlistBatch} hook: gate batch writes on the same role the
-    ///      single setter uses, producing an identical
-    ///      `AccessControlUnauthorizedAccount` revert.
-    function _checkAllowlistAdmin() internal view override {
-        _checkRole(DEFAULT_ADMIN_ROLE);
+    /// @notice Open or close BOTH directions between `holder` and `destination`.
+    ///         Restricted to DEFAULT_ADMIN_ROLE.
+    /// @dev    Exactly two edges and nothing else, so linking `a <-> b` and
+    ///         `a <-> c` leaves `b -> c` closed. Self-linking is rejected
+    ///         rather than silently opening a self-route; `x -> x` is an
+    ///         ordinary edge an admin must approve on purpose via
+    ///         `setDestinationAllowed`.
+    function setLink(address holder, address destination, bool allowed) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(holder != destination, "self-link");
+        _setDestinationAllowed(holder, destination, allowed);
+        _setDestinationAllowed(destination, holder, allowed);
     }
 
-    /// @dev {StrandsAllowlistBatch} hook: the single write, shared by the public
-    ///      setter and every batch entrypoint.
-    function _setDestinationAllowed(address holder, address destination, bool allowed) internal override {
+    /// @notice Move `amount` from `from` to `to`, bypassing the destination
+    ///         allowlist and without spending any ERC20 allowance.
+    ///         Restricted to DEFAULT_ADMIN_ROLE.
+    /// @dev    Reaches `super._update` because the guard lives in `_update` and
+    ///         `ERC20._transfer` is not virtual. The two checks below are what
+    ///         that parent would have done, restated so skipping the allowlist
+    ///         does not also skip them — they keep this from becoming a mint or
+    ///         burn path, leaving total supply unchanged.
+    function adminTransfer(address from, address to, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (from == address(0)) revert ERC20InvalidSender(address(0));
+        if (to == address(0)) revert ERC20InvalidReceiver(address(0));
+
+        super._update(from, to, amount);
+        emit AdminTransfer(msg.sender, from, to, amount);
+    }
+
+    /// @dev The single allowlist write, shared by both setters.
+    function _setDestinationAllowed(address holder, address destination, bool allowed) private {
         allowedDestination[holder][destination] = allowed;
         emit DestinationAllowedSet(holder, destination, allowed);
-    }
-
-    /// @dev {StrandsAllowlistBatch} hook: read an edge.
-    function _allowedDestination(address holder, address destination) internal view override returns (bool) {
-        return allowedDestination[holder][destination];
     }
 
     /// @dev Enforce the per-holder destination allowlist on holder-to-holder
