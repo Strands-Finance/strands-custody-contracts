@@ -23,7 +23,7 @@ contract RolesTest is BaseTest {
 
     function test_Constructor_RevertsOnZeroAdmin() public {
         vm.expectRevert(bytes("admin=0"));
-        new StrandsCustodyToken(address(0), 18);
+        new StrandsCustodyToken(address(0), 18, NAME, SYMBOL);
     }
 
     /// @dev The constructor grants the admin role and nothing else. An admin
@@ -31,7 +31,7 @@ contract RolesTest is BaseTest {
     ///      mint or burn with no visible grant, which is the whole point of
     ///      keeping the roles separate.
     function test_Constructor_GrantsTheAdminRoleAndNothingElse() public {
-        StrandsCustodyToken fresh = new StrandsCustodyToken(admin, 18);
+        StrandsCustodyToken fresh = new StrandsCustodyToken(admin, 18, NAME, SYMBOL);
 
         assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), admin));
         assertFalse(fresh.hasRole(fresh.MINTER_ROLE(), admin), "admin must not arrive as a minter");
@@ -121,9 +121,13 @@ contract RolesTest is BaseTest {
     }
 
     /// @dev No address is special. `admin` is excluded because it is the one
-    ///      address for which the call legitimately succeeds.
+    ///      address for which the call legitimately succeeds; `minter` and
+    ///      `custodian` because `setUp` already granted them the role this may
+    ///      pick, so the closing `hasRole` would read `true` for a reason that
+    ///      has nothing to do with the rejected grant. That those two cannot
+    ///      grant either is `test_MinterAndCustodian_CannotGrantRoles` above.
     function testFuzz_ArbitraryNonAdmin_CannotGrantAnyRole(address caller, uint8 which) public {
-        vm.assume(caller != admin);
+        vm.assume(caller != admin && caller != minter && caller != custodian);
         bytes32 role = which % 3 == 0 ? MINTER_ROLE : which % 3 == 1 ? CUSTODIAN_ROLE : DEFAULT_ADMIN_ROLE;
 
         vm.prank(caller);

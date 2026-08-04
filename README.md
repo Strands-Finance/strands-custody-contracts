@@ -20,10 +20,19 @@ Transfers are ordinary, unrestricted ERC20: any holder may `transfer` /
 
 | Field | Value |
 | --- | --- |
-| Name | `Strands Custody Token` |
-| Symbol | `SCT` |
-| Decimals | Set at deploy time via the `decimals_` constructor argument (e.g. USDC = 6, BTC = 8, ETH = 18) |
+| Name | Set at deploy time via `name_`, e.g. `Strands Custody USDC (BitGo)` |
+| Symbol | Set at deploy time via `symbol_`, e.g. `scUSDC` |
+| Decimals | Set at deploy time via `decimals_` (e.g. USDC = 6, BTC = 8, ETH = 18) |
 | Initial supply | `0` (mint via `MINTER_ROLE`) |
+
+One token is deployed per (holder wallet, custodian, asset), so the name and
+symbol identify **which asset at which custodian** — enough to tell a USDC token
+from a WETH one on an explorer without a lookup, and deliberately not enough to
+identify the holder. Every holder's USDC-at-BitGo token carries the same label.
+
+All three fields are constructor-only and **immutable**: there is no setter, so a
+token deployed with the wrong name can only be redeployed and re-minted into.
+The constructor rejects an empty `name_` or `symbol_` for that reason.
 
 ## Roles
 
@@ -40,6 +49,8 @@ multisigs / timelocks) should hold them.
 ## API
 
 ```solidity
+constructor(address admin, uint8 decimals_, string memory name_, string memory symbol_);
+
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
 function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE — no allowance needed
 function burn(uint256 amount) public;                        // CUSTODIAN_ROLE (overridden)
@@ -68,7 +79,8 @@ image: custodian-driven, and the holder cannot initiate it.
 
 ```bash
 # 1. Deploy — admin receives DEFAULT_ADMIN_ROLE
-export ADMIN_ADDRESS=0xAdmin DECIMALS=18 DEPLOYER_PRIVATE_KEY=0x...
+export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
+export TOKEN_NAME="Strands Custody USDC (BitGo)" TOKEN_SYMBOL="scUSDC"
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 
 # 2. Admin grants operating roles
@@ -135,11 +147,21 @@ forge test -vvv
 ```bash
 export ADMIN_ADDRESS=0x...
 export DEPLOYER_PRIVATE_KEY=0x...
+export DECIMALS=6                                  # optional, defaults to 18
+export TOKEN_NAME="Strands Custody USDC (BitGo)"   # optional, defaults to "Strands Custody Token"
+export TOKEN_SYMBOL="scUSDC"                       # optional, defaults to "SCT"
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --broadcast \
   --verify
 ```
+
+**Set `TOKEN_NAME` and `TOKEN_SYMBOL`.** They default to `Strands Custody Token` /
+`SCT` — the pair every token carried before this contract took them as arguments —
+so a deploy never fails or produces a nameless token for want of an environment
+variable. But the label is permanent, and taking the default gives you a token
+indistinguishable from every other one on an explorer, which is the whole thing
+these arguments exist to fix.
 
 After deployment, the admin grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to the
 intended operator addresses with `grantRole`.

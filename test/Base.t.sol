@@ -23,6 +23,13 @@ abstract contract BaseTest is Test {
     ///      than a bare `1_000 ether` so the coupling to the fixture is visible.
     uint256 internal constant INITIAL_MINT = 1_000 ether;
 
+    /// @dev The metadata `setUp` deploys with, in the exact shape the backend
+    ///      composes: "Strands Custody <asset> (<custodian>)" / "sc<ASSET>".
+    ///      ETH because the fixture is 18-decimal; `Metadata.t.sol` is where the
+    ///      strings themselves are the subject.
+    string internal constant NAME = "Strands Custody ETH (BitGo)";
+    string internal constant SYMBOL = "scETH";
+
     /// @dev Role ids, read from the token in `setUp` so the CONTRACT stays the
     ///      source of truth. Cached because a `token.X_ROLE()` call placed after
     ///      a `vm.prank` / `vm.expectRevert` would consume the cheatcode before
@@ -36,7 +43,7 @@ abstract contract BaseTest is Test {
     event Transfer(address indexed from, address indexed to, uint256 value);
 
     function setUp() public virtual {
-        token = new StrandsCustodyToken(admin, 18);
+        token = new StrandsCustodyToken(admin, 18, NAME, SYMBOL);
 
         DEFAULT_ADMIN_ROLE = token.DEFAULT_ADMIN_ROLE();
         MINTER_ROLE = token.MINTER_ROLE();
