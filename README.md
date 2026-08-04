@@ -13,13 +13,8 @@ holder cannot redeem themselves, and cannot delegate that power to anyone else
 via an ERC20 allowance. All three paths emit `CustodyBurn`, so a reconciler can
 track every unit of destroyed supply from that one event.
 
-Holder-to-holder transfers are **default-deny**: a holder can only `transfer` /
-`transferFrom` to destinations the admin has approved for that specific holder
-via `setDestinationAllowed`. Mint and burn paths are exempt from *that*
-restriction — but only from that one; their role checks still apply. The
-authorised topology is a set of disjoint user ↔ subaccount pairs, and
-[`StrandsAllowlistBatch`](./src/StrandsAllowlistBatch.sol) links them one
-transaction at a time; see [Subaccount transfers](#subaccount-transfers).
+Transfers are ordinary, unrestricted ERC20: any holder may `transfer` /
+`transferFrom` to any address, exactly as with a stock token.
 
 ## Token
 
@@ -34,7 +29,7 @@ transaction at a time; see [Subaccount transfers](#subaccount-transfers).
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role; manage the per-holder transfer destination allowlist (`setDestinationAllowed` and every [batch helper](#batch-helpers)) |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role. No power over balances. |
 | `MINTER_ROLE` | Call `mint(to, amount)` |
 | `CUSTODIAN_ROLE` | The entire burn surface: `custodyBurn(from, amount)` (no allowance needed), plus the inherited `burn` / `burnFrom` |
 
@@ -49,83 +44,27 @@ function mint(address to, uint256 amount) external;          // MINTER_ROLE
 function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE — no allowance needed
 function burn(uint256 amount) public;                        // CUSTODIAN_ROLE (overridden)
 function burnFrom(address from, uint256 amount) public;      // CUSTODIAN_ROLE (overridden), spends allowance
-function setDestinationAllowed(address holder, address destination, bool allowed) external; // DEFAULT_ADMIN_ROLE
-function allowedDestination(address holder, address destination) external view returns (bool);
 
 event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
-event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
-
-error TransferDestinationNotAllowed(address holder, address destination);
 ```
 
-Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with two
-behavioral changes:
+Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with one
+behavioral change:
 
-1. `transfer` and `transferFrom` revert with `TransferDestinationNotAllowed`
-   unless `allowedDestination[holder][destination]` is true (keyed by the token
-   owner, not the spender).
-2. `burn` and `burnFrom` are `CUSTODIAN_ROLE`-only and emit `CustodyBurn`. They
-   keep their standard selectors, so an integration calling them still compiles
-   — it will revert with `AccessControlUnauthorizedAccount` unless the caller is
-   a custodian. `burnFrom` still spends the allowance, and the role check runs
-   *before* it, so a rejected call leaves the allowance untouched.
+- `burn` and `burnFrom` are `CUSTODIAN_ROLE`-only and emit `CustodyBurn`. They
+  keep their standard selectors, so an integration calling them still compiles
+  — it will revert with `AccessControlUnauthorizedAccount` unless the caller is
+  a custodian. `burnFrom` still spends the allowance, and the role check runs
+  *before* it, so a rejected call leaves the allowance untouched.
 
-### Batch helpers
+`transfer`, `transferFrom` and `approve` are untouched.
 
-Each allowlist entry is one directed edge, so a bidirectional link costs two
-writes. [`StrandsAllowlistBatch`](./src/StrandsAllowlistBatch.sol) — inherited by
-the token, not deployed separately — collapses N links into a single
-transaction. Writes are `DEFAULT_ADMIN_ROLE`; the views are open.
+## Operating the token
 
-```solidity
-struct Edge { address holder; address destination; }
-
-function setPairs(Edge[] calldata pairs, bool allowed) external;          // both directions — links a subaccount
-
-function areAllowed(Edge[] calldata edges) external view returns (bool[] memory);
-function isLinked(address user, address sub) external view returns (bool); // both directions open
-```
-
-Four behaviors worth knowing:
-
-- **`setPairs` is the only batch writer, deliberately.** The authorised topology
-  is a set of disjoint user ↔ subaccount 2-cycles, and `setPairs` is exactly
-  that shape — it cannot express any other. Anything asymmetric (a self-edge,
-  one leg of a link, a shared destination fanned across many holders) is a
-  deliberate one-at-a-time decision for `setDestinationAllowed`, not something
-  made convenient in bulk.
-
-- **Writes are `DEFAULT_ADMIN_ROLE`, with no exceptions.** The role is checked
-  before anything else happens, so an unprivileged caller is rejected with the
-  same `AccessControlUnauthorizedAccount` the single setter throws — even when
-  the batch would have written nothing. Holding `MINTER_ROLE` or
-  `CUSTODIAN_ROLE` is not a shortcut. The views are open by design, so
-  integrations can preflight without privileges.
-
-- **Batching is inherited, not a separate contract.** OZ's `onlyRole` checks
-  `msg.sender`, never `tx.origin`, so a separately deployed helper would be the
-  caller the token sees and would need `DEFAULT_ADMIN_ROLE` granted to it —
-  making it a second token admin. Inherited, the batch entrypoints reach the
-  role check by internal jump, so the admin signer remains `msg.sender` and no
-  extra privilege exists anywhere.
-- **Batch writes skip no-ops.** An edge already at the target value is not
-  rewritten and emits nothing, so re-running a manifest is cheap and quiet. The
-  skip is per *edge*, so re-linking a half-linked pair costs exactly one write.
-  The single `setDestinationAllowed` deliberately still re-emits.
-
-## Subaccount transfers
-
-A "subaccount" — a smart contract wallet, or any second address a user
-controls — is nothing special to the token. Enabling it is one linking
-transaction.
-
-**Get tokens to the user by minting, not transferring.** `_mint` reaches
-`_update` with `from == address(0)`, so issuance bypasses the allowlist and
-needs **zero edges**. Minting to a treasury and transferring out does not:
-holders are not exempt from the allowlist *even when they hold a privileged
-role*, so that path costs one edge per user, permanently. Redemption is likewise
-allowlist-exempt (though custodian-driven — the user cannot initiate it), so the
-allowlist only ever has to describe user ↔ subaccount routes.
+**Get tokens to a holder by minting, not transferring.** Minting to a treasury
+and transferring out works, but it costs an extra transfer and puts the treasury
+on the reconciler's `Transfer` log for no reason. Redemption is the mirror
+image: custodian-driven, and the holder cannot initiate it.
 
 ```bash
 # 1. Deploy — admin receives DEFAULT_ADMIN_ROLE
@@ -135,80 +74,49 @@ forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 # 2. Admin grants operating roles
 cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak "MINTER_ROLE") $MINTER \
   --rpc-url $RPC_URL --private-key $ADMIN_PK
+cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak "CUSTODIAN_ROLE") $CUSTODIAN \
+  --rpc-url $RPC_URL --private-key $ADMIN_PK
 
-# 3. Issue straight to the user — no allowlist entry needed
-cast send $TOKEN "mint(address,uint256)" $USER 1000ether \
+# 3. Issue straight to the holder
+cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 
-# 4. Route is closed until linked (expect false)
-cast call $TOKEN "isLinked(address,address)(bool)" $USER $SCW --rpc-url $RPC_URL
+# 4. The holder moves their balance like any ERC20
+cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
+  --rpc-url $RPC_URL --private-key $HOLDER_PK
 
-# 5. Link N subaccounts — both directions — in ONE transaction
-cast send $TOKEN "setPairs((address,address)[],bool)" \
-  "[($USER1,$SCW1),($USER2,$SCW2)]" true \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
-
-# 6. User funds the subaccount
-cast send $TOKEN "transfer(address,uint256)" $SCW 100ether \
-  --rpc-url $RPC_URL --private-key $USER_PK
-
-# 7. Offboard — same call, allowed=false
-cast send $TOKEN "setPairs((address,address)[],bool)" \
-  "[($USER1,$SCW1)]" false \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
+# 5. Redeem — custodian only; the holder cannot burn their own balance
+cast send $TOKEN "custodyBurn(address,uint256)" $HOLDER 100ether \
+  --rpc-url $RPC_URL --private-key $CUSTODIAN_PK
 ```
-
-`test/flow/SubaccountLifecycle.t.sol` executes exactly this sequence.
-
-### Integration notes
-
-- **The subaccount is itself a holder, and siblings are not connected.** Linking
-  opens `user ↔ sub` and nothing more, so `sub1 -> sub2` stays closed even
-  though both belong to the same wallet. Sibling traffic routes through the
-  user's main address — one `setPairs` entry per subaccount — which is what
-  keeps the edge count linear rather than quadratic.
-  `test/flow/SubaccountTransfers.t.sol` pins this shape.
-- **Zero-value transfers revert**, unlike a plain ERC20. Probe a route with
-  `isLinked` / `areAllowed`, never `transfer(dest, 0)`.
-- **Self-transfers revert** unless allowlisted, and linking does NOT open a
-  self-route. `x -> x` is an ordinary edge that an admin must approve on
-  purpose via `setDestinationAllowed`; a contract that self-transfers without
-  that approval is meant to fail rather than be silently accommodated.
-- **Counterfactual CREATE2 wallets can be linked before deployment**, but the
-  address derives from `(factory, initCodeHash, salt)`; change any of those and
-  the approval points at an address nobody controls. Re-derive before seeding.
-- **Account-abstraction bundlers drop failing UserOps at simulation**, often
-  with an opaque error. Preflight with `isLinked`. To decode a revert that does
-  surface, match selector `0x4eacc49d`
-  (`TransferDestinationNotAllowed`) — scanning the raw 4 bytes is more reliable
-  than typed decoding, since 4337 and SCW frames wrap reverts.
 
 ## Security
 
-`CUSTODIAN_ROLE` is a strong privilege — the holder can destroy any holder's
-balance, and is the **only** party who can, so it is a liveness dependency as
-well as a security one. In production:
+`CUSTODIAN_ROLE` is custodial: it can destroy any balance, and is the **only**
+party who can, so it is a liveness dependency as well as a security one. There
+is no self-service exit — if every custodian key is lost, no balance can ever be
+redeemed.
 
-- Hold `DEFAULT_ADMIN_ROLE` in a timelock-controlled multisig.
-- Hold `CUSTODIAN_ROLE` in a multisig with operational signers only.
-- Do not grant `CUSTODIAN_ROLE` to EOAs in production.
-- Keep at least two holders of `CUSTODIAN_ROLE`. There is no self-service exit:
-  if every custodian key is lost, no balance can ever be redeemed.
+`DEFAULT_ADMIN_ROLE` holds no power over balances. Its reach is the role graph:
+it can grant itself `CUSTODIAN_ROLE` and then destroy supply, but that grant is
+a separate transaction and lands on-chain as `RoleGranted`, so the escalation is
+visible rather than standing.
 
-The transfer allowlist adds further considerations:
+In production:
 
-- Transfers are **default-deny** — a holder cannot move tokens at all until the
-  admin approves at least one destination for them (self-transfers included).
-  Deployment runbooks must seed the allowlist before enabling user flows.
-- The admin effectively holds transfer-censorship power over every holder.
+- Hold `CUSTODIAN_ROLE` in a multisig with operational signers only, and keep at
+  least two holders of it.
+- Hold `DEFAULT_ADMIN_ROLE` in a timelock-controlled multisig. The timelock is
+  what gives holders visibility of a `CUSTODIAN_ROLE` grant before it settles.
+- Do not grant `DEFAULT_ADMIN_ROLE` or `CUSTODIAN_ROLE` to EOAs in production.
 - **Never renounce the last `DEFAULT_ADMIN_ROLE` holder.** The role is its own
-  role admin, so once the last holder is gone no party can bootstrap a new one.
-  The allowlist freezes permanently: existing routes become irrevocable, no new
-  route can ever be added, and unapproved balances are stranded. The custodian
-  can still redeem — that is the only remaining exit, since a holder cannot burn
-  their own balance. Lose the last admin *and* the custodian keys and balances
-  are both immobile and unredeemable, permanently. Keep at least two holders of
-  each role. `test/allowlist/AdminLifecycle.t.sol` pins this behaviour.
+  role admin, so once the last holder is gone no party can bootstrap a new one
+  and the role graph freezes permanently — no new minter, no new custodian.
+  Balances still move (transfers need no privilege), but if the existing
+  custodian keys are also lost, nothing can ever be redeemed again. Keep at
+  least two holders of each role.
+- Monitor `CustodyBurn`. Every path that destroys supply emits it, so it is the
+  complete record of redemption.
 
 ## Build & test
 
@@ -242,17 +150,20 @@ Pre-extracted artifacts in [`abi/`](./abi):
 
 | File | Format | Use with |
 | --- | --- | --- |
-| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
+| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
 | `abi/StrandsCustodyToken.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
 | `abi/StrandsCustodyToken.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 
 ### Strands ContractInterfaceGenerator
 
-Drop `abi/StrandsCustodyToken.json` into the directory the generator scans
+Copy `abi/StrandsCustodyToken.json` into the directory the generator scans
 (e.g. `Sources/Strands/StrandsCustodyToken/StrandsCustodyToken.json`) and run
-the CIG normally. If/when the contract is deployed, add a sibling
-`StrandsCustodyToken-deployments.json` of shape `{"<chainId>": "0x<address>"}`
-to have the deployment class generated too.
+the CIG normally. The artifact carries `bytecode` inline, so the copy is the
+whole sync — the generator bakes that value into
+`StrandsCustodyTokenDeploymentBase.BYTECODE`, and splicing the ABI and the
+creation bytecode from separate files is how the two drift apart. If/when the
+contract is deployed, add a sibling `StrandsCustodyToken-deployments.json` of
+shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 
 ### Plain Nethereum.Generator.Console
 
@@ -275,14 +186,22 @@ forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > abi/StrandsCustodyT
 python3 - <<'PY'
 import json
 abi = json.load(open("abi/StrandsCustodyToken.abi"))
-json.dump({
-    "_format": "hh-sol-artifact-1",
-    "contractName": "StrandsCustodyToken",
-    "sourceName":   "src/StrandsCustodyToken.sol",
-    "abi": abi,
-}, open("abi/StrandsCustodyToken.json", "w"), indent=2)
+bytecode = open("abi/StrandsCustodyToken.bin").read().strip()
+with open("abi/StrandsCustodyToken.json", "w") as f:
+    json.dump({
+        "_format": "hh-sol-artifact-1",
+        "contractName": "StrandsCustodyToken",
+        "sourceName":   "src/StrandsCustodyToken.sol",
+        "abi": abi,
+        "bytecode": "0x" + bytecode,
+    }, f, indent=2)
+    f.write("\n")
 PY
 ```
+
+Then copy `abi/StrandsCustodyToken.json` over the consumer's generator source and
+re-run the generator — updating one without the other leaves the generated
+`BYTECODE` constant deploying an older contract.
 
 ## License
 

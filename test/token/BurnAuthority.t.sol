@@ -3,26 +3,22 @@ pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Destruction of supply is CUSTODIAN_ROLE-only. A holder — including a
-///         smart contract wallet and every subaccount linked to it — has exactly
-///         one capability: transferring along the routes the admin opened for
-///         them. They cannot destroy their own balance, and they cannot delegate
-///         that power to anyone else via an ERC20 allowance. Both inherited
-///         `ERC20Burnable` entrypoints are gated alongside `custodyBurn`, so
-///         every redemption goes through the custodian and stays in step with
-///         the off-chain ledger.
+/// @notice Destruction of supply is CUSTODIAN_ROLE-only. A holder has exactly
+///         one capability — moving their balance. They cannot destroy it, and
+///         they cannot delegate that power to anyone else via an ERC20
+///         allowance. Both inherited `ERC20Burnable` entrypoints are gated
+///         alongside `custodyBurn`, so every redemption goes through the
+///         custodian and stays in step with the off-chain ledger.
 ///
 /// @dev    A balance here is a claim against an off-chain ledger. A holder who
 ///         can burn unilaterally desyncs that ledger, which is the whole reason
-///         `custodyBurn` exists. Inheriting OZ's `ERC20Burnable` currently hands
-///         every holder a `burn` / `burnFrom` that bypasses both the allowlist
-///         (`_update` exempts `to == address(0)`) and the custodian.
+///         `custodyBurn` exists — and the reason the `burn` / `burnFrom` that
+///         OZ's `ERC20Burnable` hands every holder had to be gated rather than
+///         left silently reachable.
 ///
-///         The tests below therefore encode INTENDED behaviour, not current
-///         behaviour: the negative cases fail until `burn` and `burnFrom` are
-///         gated on CUSTODIAN_ROLE. The two positive controls at the bottom pass
-///         both before and after that change, so the fix cannot be achieved by
-///         breaking custody instead.
+///         The two positive controls at the bottom are what keeps the negative
+///         cases honest: they pin that custody still works, so the gating
+///         cannot be satisfied by breaking burning outright.
 contract BurnAuthorityTest is BaseTest {
     function test_Holder_CannotBurnOwnBalance() public {
         vm.prank(alice);
@@ -33,9 +29,9 @@ contract BurnAuthorityTest is BaseTest {
         assertEq(token.totalSupply(), INITIAL_MINT, "supply must not move without the custodian");
     }
 
-    /// @dev An allowance must not launder the burn: today `approve` + `burnFrom`
-    ///      destroys a holder's balance with no allowlist check and no custodian
-    ///      involvement, so any address a user approves can wipe them out.
+    /// @dev An allowance must not launder the burn. Ungated, `approve` +
+    ///      `burnFrom` destroys a holder's balance with no custodian
+    ///      involvement, so any address a user approves could wipe them out.
     function test_Holder_CannotBurnFromEvenWithAllowance() public {
         vm.prank(alice);
         token.approve(bob, 200 ether);
@@ -62,10 +58,9 @@ contract BurnAuthorityTest is BaseTest {
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
-    /// @dev A linked subaccount is just another holder — being reachable from the
-    ///      main wallet grants it no additional power.
-    function test_Subaccount_CannotBurnOwnBalance() public {
-        _link(alice, bob);
+    /// @dev A transfer recipient is just another holder — receiving a balance
+    ///      grants it no power to destroy one.
+    function test_Recipient_CannotBurnOwnBalance() public {
         vm.prank(alice);
         token.transfer(bob, 300 ether);
 
@@ -73,12 +68,15 @@ contract BurnAuthorityTest is BaseTest {
         _expectNotCustodian(bob);
         token.burn(300 ether);
 
-        assertEq(token.balanceOf(bob), 300 ether, "subaccount balance must be untouched");
+        assertEq(token.balanceOf(bob), 300 ether, "recipient balance must be untouched");
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
-    /// @dev Holding some other role is not a shortcut into the burn surface,
-    ///      mirroring `test/batch/Auth.t.sol::test_MinterAndCustodian_CannotBatch`.
+    /// @dev Holding some other role is not a shortcut into the burn surface.
+    ///      The admin is the sharpest case: it is the role admin for
+    ///      CUSTODIAN_ROLE, but until it grants itself that role it cannot
+    ///      destroy a balance — and the grant is visible on-chain as
+    ///      `RoleGranted`.
     function test_MinterAndAdmin_CannotBurn() public {
         // fund both, so a failure cannot be explained by an empty balance
         vm.startPrank(minter);

@@ -20,3 +20,50 @@ jobs:
         run: forge test -vvv
       - name: forge fmt --check
         run: forge fmt --check
+      # `forge build`/`forge test` compile from src/ and never read abi/, so a contract change that
+      # skips the README "Regenerating after a contract change" block passes every step above while
+      # abi/ still describes the old contract. The consumer generates its Nethereum bindings AND its
+      # BYTECODE constant from abi/StrandsCustodyToken.json, so a stale artifact there deploys an
+      # older contract against newer call sites — reverting only on a live call to a selector the
+      # deployed code has no dispatch entry for.
+      - name: abi/ matches src/
+        run: |
+          forge inspect StrandsCustodyToken abi --json > /tmp/fresh.abi
+          forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > /tmp/fresh.bin
+          python3 - <<'PY'
+          import json, sys
+
+          # Compare parsed, not byte-for-byte: the CI toolchain floats on `stable`, and a forge
+          # release that reindents or reorders its JSON must not read as contract drift.
+          def norm(x): return json.dumps(x, sort_keys=True)
+
+          fresh_abi = json.load(open("/tmp/fresh.abi"))
+          fresh_bin = open("/tmp/fresh.bin").read().strip()
+          committed_abi = json.load(open("abi/StrandsCustodyToken.abi"))
+          committed_bin = open("abi/StrandsCustodyToken.bin").read().strip()
+          artifact = json.load(open("abi/StrandsCustodyToken.json"))
+
+          drift = []
+          if norm(fresh_abi) != norm(committed_abi):
+              fresh_fns = {f"{e['name']}({','.join(i['type'] for i in e['inputs'])})"
+                           for e in fresh_abi if e["type"] == "function"}
+              old_fns = {f"{e['name']}({','.join(i['type'] for i in e['inputs'])})"
+                         for e in committed_abi if e["type"] == "function"}
+              drift.append("abi/StrandsCustodyToken.abi is stale")
+              for fn in sorted(fresh_fns - old_fns): drift.append(f"    missing from abi/: {fn}")
+              for fn in sorted(old_fns - fresh_fns): drift.append(f"    no longer in src/: {fn}")
+          if fresh_bin != committed_bin:
+              drift.append("abi/StrandsCustodyToken.bin is stale")
+          # The artifact is the file the consumer generates from, so its two halves are checked
+          # against src/ independently — a spliced abi/bin pair is exactly how they drift apart.
+          if norm(artifact["abi"]) != norm(fresh_abi):
+              drift.append("abi/StrandsCustodyToken.json carries a stale `abi`")
+          if artifact["bytecode"].removeprefix("0x") != fresh_bin:
+              drift.append("abi/StrandsCustodyToken.json carries a stale `bytecode`")
+
+          if drift:
+              print("\n".join(drift))
+              sys.exit("\nRe-run the 'Regenerating after a contract change' block in README.md, "
+                       "then copy abi/StrandsCustodyToken.json to the consumer and re-run its generator.")
+          print("abi/ is in sync with src/")
+          PY
