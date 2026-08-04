@@ -257,17 +257,20 @@ Pre-extracted artifacts in [`abi/`](./abi):
 
 | File | Format | Use with |
 | --- | --- | --- |
-| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
+| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
 | `abi/StrandsCustodyToken.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
 | `abi/StrandsCustodyToken.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 
 ### Strands ContractInterfaceGenerator
 
-Drop `abi/StrandsCustodyToken.json` into the directory the generator scans
+Copy `abi/StrandsCustodyToken.json` into the directory the generator scans
 (e.g. `Sources/Strands/StrandsCustodyToken/StrandsCustodyToken.json`) and run
-the CIG normally. If/when the contract is deployed, add a sibling
-`StrandsCustodyToken-deployments.json` of shape `{"<chainId>": "0x<address>"}`
-to have the deployment class generated too.
+the CIG normally. The artifact carries `bytecode` inline, so the copy is the
+whole sync — the generator bakes that value into
+`StrandsCustodyTokenDeploymentBase.BYTECODE`, and splicing the ABI and the
+creation bytecode from separate files is how the two drift apart. If/when the
+contract is deployed, add a sibling `StrandsCustodyToken-deployments.json` of
+shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 
 ### Plain Nethereum.Generator.Console
 
@@ -290,14 +293,22 @@ forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > abi/StrandsCustodyT
 python3 - <<'PY'
 import json
 abi = json.load(open("abi/StrandsCustodyToken.abi"))
-json.dump({
-    "_format": "hh-sol-artifact-1",
-    "contractName": "StrandsCustodyToken",
-    "sourceName":   "src/StrandsCustodyToken.sol",
-    "abi": abi,
-}, open("abi/StrandsCustodyToken.json", "w"), indent=2)
+bytecode = open("abi/StrandsCustodyToken.bin").read().strip()
+with open("abi/StrandsCustodyToken.json", "w") as f:
+    json.dump({
+        "_format": "hh-sol-artifact-1",
+        "contractName": "StrandsCustodyToken",
+        "sourceName":   "src/StrandsCustodyToken.sol",
+        "abi": abi,
+        "bytecode": "0x" + bytecode,
+    }, f, indent=2)
+    f.write("\n")
 PY
 ```
+
+Then copy `abi/StrandsCustodyToken.json` over the consumer's generator source and
+re-run the generator — updating one without the other leaves the generated
+`BYTECODE` constant deploying an older contract.
 
 ## License
 
