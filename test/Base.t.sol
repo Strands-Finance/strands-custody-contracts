@@ -9,8 +9,6 @@ import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
 /// @notice Deploys the token, wires MINTER_ROLE / CUSTODIAN_ROLE and funds
 ///         `alice` with `INITIAL_MINT`. Every suite under `test/` extends this
 ///         so the starting state is identical across files.
-/// @dev    The allowlist starts EMPTY, which makes every inherited test double
-///         as a regression test for the default-deny behavior.
 abstract contract BaseTest is Test {
     StrandsCustodyToken internal token;
 
@@ -35,8 +33,6 @@ abstract contract BaseTest is Test {
     bytes32 internal CUSTODIAN_ROLE;
 
     event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
-    event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
-    event AdminTransfer(address indexed admin, address indexed from, address indexed to, uint256 amount);
     event Transfer(address indexed from, address indexed to, uint256 value);
 
     function setUp() public virtual {
@@ -55,54 +51,7 @@ abstract contract BaseTest is Test {
         token.mint(alice, INITIAL_MINT);
     }
 
-    // ---------- allowlist arrangement (admin-pranked) ----------
-    //
-    // These wrap ARRANGEMENT only. Suites where the setter itself is the subject
-    // under test — `allowlist/SetDestination.t.sol`, `allowlist/SetLink.t.sol` —
-    // keep calling the entrypoints directly, so what is being asserted about
-    // stays visible at the call site.
-
-    /// @dev Open one directed edge.
-    function _allow(address holder, address destination) internal {
-        vm.prank(admin);
-        token.setDestinationAllowed(holder, destination, true);
-    }
-
-    /// @dev Close one directed edge.
-    function _disallow(address holder, address destination) internal {
-        vm.prank(admin);
-        token.setDestinationAllowed(holder, destination, false);
-    }
-
-    /// @dev Open both directions between `a` and `b` — one link, two edges.
-    function _link(address a, address b) internal {
-        vm.prank(admin);
-        token.setLink(a, b, true);
-    }
-
-    /// @dev Close both directions between `a` and `b`.
-    function _unlink(address a, address b) internal {
-        vm.prank(admin);
-        token.setLink(a, b, false);
-    }
-
-    // ---------- allowlist reads ----------
-
-    /// @dev Both directions open between `a` and `b`. Derived rather than
-    ///      stored: the token exposes only the directed `allowedDestination`
-    ///      mapping, so a link is two reads.
-    function _isLinked(address a, address b) internal view returns (bool) {
-        return token.allowedDestination(a, b) && token.allowedDestination(b, a);
-    }
-
     // ---------- revert expectations ----------
-
-    /// @dev Expect the next call to be rejected by the destination allowlist.
-    function _expectNotAllowed(address holder, address destination) internal {
-        vm.expectRevert(
-            abi.encodeWithSelector(StrandsCustodyToken.TransferDestinationNotAllowed.selector, holder, destination)
-        );
-    }
 
     /// @dev The `AccessControlUnauthorizedAccount` payload as raw bytes, for
     ///      tests that compare a low-level call's return data byte-for-byte
@@ -142,24 +91,8 @@ abstract contract BaseTest is Test {
         emit CustodyBurn(by, from, amount);
     }
 
-    function _expectDestinationAllowedSetEvent(address holder, address destination, bool allowed) internal {
-        vm.expectEmit(true, true, false, true, address(token));
-        emit DestinationAllowedSet(holder, destination, allowed);
-    }
-
-    /// @dev `by` rather than `admin` — the fixture already binds that name.
-    function _expectAdminTransferEvent(address by, address from, address to, uint256 amount) internal {
-        vm.expectEmit(true, true, true, true, address(token));
-        emit AdminTransfer(by, from, to, amount);
-    }
-
     function _expectTransferEvent(address from, address to, uint256 value) internal {
         vm.expectEmit(true, true, false, true, address(token));
         emit Transfer(from, to, value);
-    }
-
-    /// @dev Assert how many events the window opened by `vm.recordLogs()` saw.
-    function _assertLogCount(uint256 expected, string memory reason) internal view {
-        assertEq(vm.getRecordedLogs().length, expected, reason);
     }
 }

@@ -3,8 +3,7 @@ pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice `mint` and its MINTER_ROLE gate. That mint bypasses the destination
-///         allowlist entirely is proven in `test/allowlist/Exemptions.t.sol`.
+/// @notice `mint` and its MINTER_ROLE gate.
 contract MintTest is BaseTest {
     function test_MinterCanMint() public {
         vm.prank(minter);

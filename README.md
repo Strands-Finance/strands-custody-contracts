@@ -13,16 +13,8 @@ holder cannot redeem themselves, and cannot delegate that power to anyone else
 via an ERC20 allowance. All three paths emit `CustodyBurn`, so a reconciler can
 track every unit of destroyed supply from that one event.
 
-Holder-to-holder transfers are **default-deny**: a holder can only `transfer` /
-`transferFrom` to destinations the admin has approved for that specific holder
-via `setDestinationAllowed`. Mint and burn paths are exempt from *that*
-restriction — but only from that one; their role checks still apply. `setLink`
-opens both directions between a pair of addresses at once; see
-[Operating the allowlist](#operating-the-allowlist).
-
-The admin can move any holder's balance to any address with `adminTransfer`,
-which needs neither an approved destination nor an ERC20 allowance. It cannot
-mint or burn — see [Security](#security).
+Transfers are ordinary, unrestricted ERC20: any holder may `transfer` /
+`transferFrom` to any address, exactly as with a stock token.
 
 ## Token
 
@@ -37,7 +29,7 @@ mint or burn — see [Security](#security).
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role; manage the per-holder transfer destination allowlist (`setDestinationAllowed`, `setLink`); **move any holder's balance to any address** via `adminTransfer`, with no approved destination and no allowance |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role. No power over balances. |
 | `MINTER_ROLE` | Call `mint(to, amount)` |
 | `CUSTODIAN_ROLE` | The entire burn surface: `custodyBurn(from, amount)` (no allowance needed), plus the inherited `burn` / `burnFrom` |
 
@@ -52,79 +44,27 @@ function mint(address to, uint256 amount) external;          // MINTER_ROLE
 function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE — no allowance needed
 function burn(uint256 amount) public;                        // CUSTODIAN_ROLE (overridden)
 function burnFrom(address from, uint256 amount) public;      // CUSTODIAN_ROLE (overridden), spends allowance
-function setDestinationAllowed(address holder, address destination, bool allowed) external; // DEFAULT_ADMIN_ROLE
-function setLink(address holder, address destination, bool allowed) external; // DEFAULT_ADMIN_ROLE — both directions
-function adminTransfer(address from, address to, uint256 amount) external;   // DEFAULT_ADMIN_ROLE — no edge, no allowance
-function allowedDestination(address holder, address destination) external view returns (bool);
 
 event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
-event DestinationAllowedSet(address indexed holder, address indexed destination, bool allowed);
-event AdminTransfer(address indexed admin, address indexed from, address indexed to, uint256 amount);
-
-error TransferDestinationNotAllowed(address holder, address destination);
 ```
 
-Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with three
-behavioral changes:
+Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with one
+behavioral change:
 
-1. `transfer` and `transferFrom` revert with `TransferDestinationNotAllowed`
-   unless `allowedDestination[holder][destination]` is true (keyed by the token
-   owner, not the spender).
-2. `burn` and `burnFrom` are `CUSTODIAN_ROLE`-only and emit `CustodyBurn`. They
-   keep their standard selectors, so an integration calling them still compiles
-   — it will revert with `AccessControlUnauthorizedAccount` unless the caller is
-   a custodian. `burnFrom` still spends the allowance, and the role check runs
-   *before* it, so a rejected call leaves the allowance untouched.
-3. `adminTransfer` moves a balance without the holder's participation — no
-   approved destination, no allowance, no signature from the holder. It is a
-   separate entrypoint rather than an exemption on `transfer`, so an admin
-   calling `transfer` is still gated like anyone else.
+- `burn` and `burnFrom` are `CUSTODIAN_ROLE`-only and emit `CustodyBurn`. They
+  keep their standard selectors, so an integration calling them still compiles
+  — it will revert with `AccessControlUnauthorizedAccount` unless the caller is
+  a custodian. `burnFrom` still spends the allowance, and the role check runs
+  *before* it, so a rejected call leaves the allowance untouched.
 
-### Linking
+`transfer`, `transferFrom` and `approve` are untouched.
 
-Each allowlist entry is one directed edge, so a bidirectional link costs two
-writes. `setLink(holder, destination, allowed)` performs exactly those two and
-nothing else. Both setters are `DEFAULT_ADMIN_ROLE`; reads are open.
+## Operating the token
 
-```solidity
-function setDestinationAllowed(address holder, address destination, bool allowed) external; // one edge
-function setLink(address holder, address destination, bool allowed) external;               // both edges
-function allowedDestination(address holder, address destination) external view returns (bool);
-```
-
-Three behaviors worth knowing:
-
-- **`setLink` writes exactly two edges.** It is the shape the policy permits and
-  it cannot express any other. Anything asymmetric — a self-edge, one leg of a
-  link, a shared destination fanned across many holders — is a deliberate
-  one-at-a-time decision for `setDestinationAllowed`.
-- **Self-linking reverts.** `setLink(x, x, true)` fails with `"self-link"`
-  rather than quietly opening a self-route. `x -> x` is an ordinary edge an
-  admin must approve on purpose with `setDestinationAllowed`.
-- **Writes are `DEFAULT_ADMIN_ROLE`, with no exceptions.** An unprivileged
-  caller is rejected with the same `AccessControlUnauthorizedAccount` from
-  either setter. Holding `MINTER_ROLE` or `CUSTODIAN_ROLE` is not a shortcut.
-  Reads are open by design, so integrations can preflight without privileges.
-
-There is no batch writer: linking N pairs is N transactions. Checking a link is
-two `allowedDestination` reads, one per direction.
-
-## Operating the allowlist
-
-Every address is just a holder to the token — it has no notion of who or what
-controls one. A pair of addresses is linked or it is not.
-
-**Get tokens to a holder by minting, not transferring.** `_mint` reaches
-`_update` with `from == address(0)`, so issuance bypasses the allowlist and
-needs **zero edges**. Minting to a treasury and transferring out does not:
-holders are not exempt from the allowlist *even when they hold a privileged
-role*, so that path costs one edge per holder, permanently. Redemption is
-likewise allowlist-exempt (though custodian-driven — the holder cannot initiate
-it), so the allowlist only ever has to describe holder-to-holder routes.
-
-The worked example below links two addresses controlled by the same person — a
-main address and a smart contract wallet — because that is the motivating case,
-but nothing in the contract knows or cares about that relationship.
+**Get tokens to a holder by minting, not transferring.** Minting to a treasury
+and transferring out works, but it costs an extra transfer and puts the treasury
+on the reconciler's `Transfer` log for no reason. Redemption is the mirror
+image: custodian-driven, and the holder cannot initiate it.
 
 ```bash
 # 1. Deploy — admin receives DEFAULT_ADMIN_ROLE
@@ -134,96 +74,49 @@ forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 # 2. Admin grants operating roles
 cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak "MINTER_ROLE") $MINTER \
   --rpc-url $RPC_URL --private-key $ADMIN_PK
+cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak "CUSTODIAN_ROLE") $CUSTODIAN \
+  --rpc-url $RPC_URL --private-key $ADMIN_PK
 
-# 3. Issue straight to the holder — no allowlist entry needed
+# 3. Issue straight to the holder
 cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 
-# 4. Route is closed until linked (both expect false)
-cast call $TOKEN "allowedDestination(address,address)(bool)" $HOLDER $DEST --rpc-url $RPC_URL
-cast call $TOKEN "allowedDestination(address,address)(bool)" $DEST $HOLDER --rpc-url $RPC_URL
-
-# 5. Link the pair — both directions — one call per pair
-cast send $TOKEN "setLink(address,address,bool)" $HOLDER $DEST true \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
-
-# 6. Holder sends along the open route
+# 4. The holder moves their balance like any ERC20
 cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
   --rpc-url $RPC_URL --private-key $HOLDER_PK
 
-# 7. Offboard — same call, allowed=false
-cast send $TOKEN "setLink(address,address,bool)" $HOLDER $DEST false \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
-
-# Out-of-band: the admin can move a balance anywhere, linked or not
-cast send $TOKEN "adminTransfer(address,address,uint256)" $HOLDER $ANYWHERE 100ether \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
+# 5. Redeem — custodian only; the holder cannot burn their own balance
+cast send $TOKEN "custodyBurn(address,uint256)" $HOLDER 100ether \
+  --rpc-url $RPC_URL --private-key $CUSTODIAN_PK
 ```
-
-`test/flow/SubaccountLifecycle.t.sol` executes exactly this sequence.
-
-### Integration notes
-
-- **Linking is not transitive.** `setLink(a, b)` and `setLink(a, c)` open
-  `a ↔ b` and `a ↔ c` and nothing else, so `b -> c` stays closed however the
-  three addresses are related off-chain. Traffic between `b` and `c` routes
-  through `a`, which is what keeps the edge count linear rather than quadratic.
-  `test/flow/SubaccountTransfers.t.sol` pins this shape for the wallet case.
-- **Zero-value transfers revert**, unlike a plain ERC20. Probe a route with
-  `allowedDestination(from, to)`, never `transfer(dest, 0)` — the allowlist
-  blocks the probe too, so it reverts rather than answering.
-- **Self-transfers revert** unless allowlisted, and linking does NOT open a
-  self-route. `x -> x` is an ordinary edge that an admin must approve on
-  purpose via `setDestinationAllowed`; a contract that self-transfers without
-  that approval is meant to fail rather than be silently accommodated.
-- **Counterfactual CREATE2 wallets can be linked before deployment**, but the
-  address derives from `(factory, initCodeHash, salt)`; change any of those and
-  the approval points at an address nobody controls. Re-derive before seeding.
-- **Account-abstraction bundlers drop failing UserOps at simulation**, often
-  with an opaque error. Preflight with `allowedDestination`. To decode a revert
-  that does surface, match selector `0x4eacc49d`
-  (`TransferDestinationNotAllowed`) — scanning the raw 4 bytes is more reliable
-  than typed decoding, since 4337 and SCW frames wrap reverts.
 
 ## Security
 
-**Both privileged roles are custodial.** `DEFAULT_ADMIN_ROLE` can take any
-holder's balance and send it anywhere via `adminTransfer` — no allowance, no
-approved destination, no participation by the holder. `CUSTODIAN_ROLE` can
-destroy any balance, and is the **only** party who can, so it is a liveness
-dependency as well as a security one. Together the two roles can seize and then
-redeem any holder's tokens. Neither role can mint: `adminTransfer` moves supply
-between addresses and never changes its total.
+`CUSTODIAN_ROLE` is custodial: it can destroy any balance, and is the **only**
+party who can, so it is a liveness dependency as well as a security one. There
+is no self-service exit — if every custodian key is lost, no balance can ever be
+redeemed.
 
-Treat `DEFAULT_ADMIN_ROLE` as a custodian in its own right, not merely as an
-administrator. In production:
+`DEFAULT_ADMIN_ROLE` holds no power over balances. Its reach is the role graph:
+it can grant itself `CUSTODIAN_ROLE` and then destroy supply, but that grant is
+a separate transaction and lands on-chain as `RoleGranted`, so the escalation is
+visible rather than standing.
 
+In production:
+
+- Hold `CUSTODIAN_ROLE` in a multisig with operational signers only, and keep at
+  least two holders of it.
 - Hold `DEFAULT_ADMIN_ROLE` in a timelock-controlled multisig. The timelock is
-  what gives holders visibility of a seizure before it settles.
-- Hold `CUSTODIAN_ROLE` in a multisig with operational signers only.
+  what gives holders visibility of a `CUSTODIAN_ROLE` grant before it settles.
 - Do not grant `DEFAULT_ADMIN_ROLE` or `CUSTODIAN_ROLE` to EOAs in production.
-- Keep at least two holders of `CUSTODIAN_ROLE`. There is no self-service exit:
-  if every custodian key is lost, no balance can ever be redeemed.
-- Monitor `AdminTransfer`. It is the only signal that distinguishes an
-  admin-initiated movement from an ordinary one — both emit the same ERC20
-  `Transfer`, so a reconciler watching `Transfer` alone cannot tell them apart.
-
-The transfer allowlist adds further considerations:
-
-- Transfers are **default-deny** — a holder cannot move tokens at all until the
-  admin approves at least one destination for them (self-transfers included).
-  Deployment runbooks must seed the allowlist before enabling user flows.
-- The admin effectively holds transfer-censorship power over every holder, and
-  with `adminTransfer` can also redirect what it censors.
 - **Never renounce the last `DEFAULT_ADMIN_ROLE` holder.** The role is its own
-  role admin, so once the last holder is gone no party can bootstrap a new one.
-  The allowlist freezes permanently: existing routes become irrevocable, no new
-  route can ever be added, and unapproved balances are stranded — `adminTransfer`
-  is lost with the role, so it is no help here. The custodian can still redeem —
-  that is the only remaining exit, since a holder cannot burn their own balance.
-  Lose the last admin *and* the custodian keys and balances are both immobile
-  and unredeemable, permanently. Keep at least two holders of each role.
-  `test/allowlist/AdminLifecycle.t.sol` pins this behaviour.
+  role admin, so once the last holder is gone no party can bootstrap a new one
+  and the role graph freezes permanently — no new minter, no new custodian.
+  Balances still move (transfers need no privilege), but if the existing
+  custodian keys are also lost, nothing can ever be redeemed again. Keep at
+  least two holders of each role.
+- Monitor `CustodyBurn`. Every path that destroys supply emits it, so it is the
+  complete record of redemption.
 
 ## Build & test
 
