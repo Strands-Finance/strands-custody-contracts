@@ -121,9 +121,13 @@ contract RolesTest is BaseTest {
     }
 
     /// @dev No address is special. `admin` is excluded because it is the one
-    ///      address for which the call legitimately succeeds.
+    ///      address for which the call legitimately succeeds; `minter` and
+    ///      `custodian` because `setUp` already granted them the role this may
+    ///      pick, so the closing `hasRole` would read `true` for a reason that
+    ///      has nothing to do with the rejected grant. That those two cannot
+    ///      grant either is `test_MinterAndCustodian_CannotGrantRoles` above.
     function testFuzz_ArbitraryNonAdmin_CannotGrantAnyRole(address caller, uint8 which) public {
-        vm.assume(caller != admin);
+        vm.assume(caller != admin && caller != minter && caller != custodian);
         bytes32 role = which % 3 == 0 ? MINTER_ROLE : which % 3 == 1 ? CUSTODIAN_ROLE : DEFAULT_ADMIN_ROLE;
 
         vm.prank(caller);
