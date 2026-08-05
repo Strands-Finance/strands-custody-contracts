@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import { stdError } from "forge-std/StdError.sol";
+import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { BaseTest } from "../Base.t.sol";
 import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 
