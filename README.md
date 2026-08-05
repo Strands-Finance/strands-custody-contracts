@@ -39,7 +39,7 @@ The constructor rejects an empty `name_` or `symbol_` for that reason.
 | Role | Powers |
 | --- | --- |
 | `DEFAULT_ADMIN_ROLE` | Grant / revoke any role. No power over balances. |
-| `MINTER_ROLE` | Call `mint(to, amount)` |
+| `MINTER_ROLE` | `mint(to, amount)` and `guardMint(to, amount, estimatedSupply)` |
 | `CUSTODIAN_ROLE` | The entire burn surface: `custodyBurn(from, amount)` (no allowance needed), plus the inherited `burn` / `burnFrom` |
 
 The constructor grants `DEFAULT_ADMIN_ROLE` to the `admin` argument. The admin
@@ -52,12 +52,36 @@ multisigs / timelocks) should hold them.
 constructor(address admin, uint8 decimals_, string memory name_, string memory symbol_);
 
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
+function guardMint(address to, uint256 amount, uint256 estimatedSupply) external;  // MINTER_ROLE
 function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE — no allowance needed
 function burn(uint256 amount) public;                        // CUSTODIAN_ROLE (overridden)
 function burnFrom(address from, uint256 amount) public;      // CUSTODIAN_ROLE (overridden), spends allowance
 
 event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
+
+error SupplyMismatch(uint256 actualSupply, uint256 estimatedSupply);
 ```
+
+### `guardMint` — mint against a supply you have already read
+
+`mint` issues whatever it is told to. `guardMint` issues it only if
+`totalSupply()` still equals `estimatedSupply`, reverting with
+`SupplyMismatch(actualSupply, estimatedSupply)` otherwise.
+
+That matters to any caller that computes the amount *from* the supply. The
+Strands backend mints the **delta** between a custodian's balance and what is
+already circulating, so a supply read that was stale — a lagging RPC replica, a
+race with a concurrent burn or mint, a repeated attempt after a crash — makes
+the delta wrong by exactly the same margin, and nothing the caller can observe
+would say so. Passing the read back in makes that assumption enforceable rather
+than assumed.
+
+`estimatedSupply` is the **pre-mint** supply, in raw base units — `decimals()`
+is display metadata and never enters the comparison. A fresh deployment
+therefore passes `0`, and `0` is an ordinary value rather than a "skip the
+check" sentinel: it is honoured only when the supply really is zero. The revert
+carries `actualSupply`, so the corrected estimate is in the revert data and a
+caller can re-read and retry.
 
 Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with one
 behavioral change:
