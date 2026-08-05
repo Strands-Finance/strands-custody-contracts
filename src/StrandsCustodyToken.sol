@@ -60,14 +60,7 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
 
     /// @notice Mint `amount` tokens to `to`, but only if `totalSupply()` equals `estimatedSupply`.
     ///         Restricted to MINTER_ROLE.
-    /// @dev    The backend mints the DELTA between the custodian balance and the circulating supply it just
-    ///         read. If that read was wrong — a stale RPC replica, a race with a concurrent burn or mint, a
-    ///         crashed-and-repeated attempt — the delta is wrong by the same amount, and minting it desyncs the
-    ///         token from the ledger it mirrors. Passing the read back in makes the assumption enforceable:
-    ///         a mismatch reverts the mint instead of compounding the error. `estimatedSupply` is the
-    ///         PRE-mint supply; a fresh deployment therefore passes 0.
-    ///         `_mint` is called directly rather than through `mint`: an external self-call would make
-    ///         `msg.sender` this contract and fail the role check.
+    /// @dev Reverts if caller doesn't know state of the contract
     function guardMint(address to, uint256 amount, uint256 estimatedSupply) external onlyRole(MINTER_ROLE) {
         uint256 actual = totalSupply();
         if (actual != estimatedSupply) revert SupplyMismatch(actual, estimatedSupply);
