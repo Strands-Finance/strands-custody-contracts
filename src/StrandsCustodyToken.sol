@@ -27,6 +27,11 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
     ///         custodian burned their own balance via `burn`.
     event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
 
+    /// @notice Thrown when `guardMint`'s supply estimate does not match the actual total supply.
+    /// @param actualSupply    The chain's `totalSupply()` at execution time.
+    /// @param estimatedSupply The caller's claimed supply.
+    error SupplyMismatch(uint256 actualSupply, uint256 estimatedSupply);
+
     /// @param admin     Address that will receive DEFAULT_ADMIN_ROLE.
     /// @param decimals_ Native decimals of the custodied asset; returned by `decimals()`.
     /// @param name_     ERC20 name. Per-deployment rather than baked in, so one token is distinguishable from the
@@ -50,6 +55,15 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl {
 
     /// @notice Mint `amount` tokens to `to`. Restricted to MINTER_ROLE.
     function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+        _mint(to, amount);
+    }
+
+    /// @notice Mint `amount` tokens to `to`, but only if `totalSupply()` equals `estimatedSupply`.
+    ///         Restricted to MINTER_ROLE.
+    /// @dev Reverts if caller doesn't know state of the contract
+    function guardMint(address to, uint256 amount, uint256 estimatedSupply) external onlyRole(MINTER_ROLE) {
+        uint256 actual = totalSupply();
+        if (actual != estimatedSupply) revert SupplyMismatch(actual, estimatedSupply);
         _mint(to, amount);
     }
 

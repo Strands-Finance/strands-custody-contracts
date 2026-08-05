@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import { GuardMintBase } from "./GuardMintBase.t.sol";
+
+/// @notice Anything that moves supply between the caller's read and the call voids the estimate — and the
+///         corrected estimate then works.
+/// @dev    This is the incident `guardMint` exists for, and it has more than one shape. A burn can shrink the
+///         supply through any of three entrypoints (`custodyBurn`, `burn`, `burnFrom`), and a second minter can
+///         grow it. The guard reads `totalSupply()` and nothing else, so all four are interchangeable here —
+///         which is the property under test, not an accident of how these are written. Each case asserts BOTH
+///         halves: the stale read is refused, and the fresh one goes through. A guard that refused everything
+///         after a burn would pass a revert-only test while bricking the mint path.
+contract GuardMintStaleEstimateTest is GuardMintBase {
+    enum BurnPath {
+        Custody,
+        Self,
+        From
+    }
+
+    /// @dev Destroy `amount` of `from`'s balance through `path`, doing whatever setup that path requires.
+    ///      `BurnAuthority.t.sol` owns which caller may use which entrypoint; here they differ only in route.
+    function _burnVia(BurnPath path, address from, uint256 amount) private {
+        if (path == BurnPath.Custody) {
+            vm.prank(custodian);
+            token.custodyBurn(from, amount);
+        } else if (path == BurnPath.Self) {
+            vm.prank(from); // `burn` destroys the CALLER's balance, so it has to be the custodian's first
+            token.transfer(custodian, amount);
+            vm.prank(custodian);
+            token.burn(amount);
+        } else {
+            vm.prank(from);
+            token.approve(custodian, amount);
+            vm.prank(custodian);
+            token.burnFrom(from, amount);
+        }
+    }
+
+    /// @dev One statement, three entrypoints.
+    function _assertGuardTracksSupplyBurnedVia(BurnPath path) private {
+        uint256 estimate = token.totalSupply();
+
+        _burnVia(path, alice, 100 ether);
+        uint256 postBurn = estimate - 100 ether;
+        assertEq(token.totalSupply(), postBurn, "precondition: this path destroyed exactly 100 ether");
+
+        vm.prank(minter);
+        _expectSupplyMismatch(postBurn, estimate);
+        token.guardMint(bob, 50 ether, estimate);
+        assertEq(token.totalSupply(), postBurn, "a refused mint must not move supply");
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, postBurn);
+        assertEq(token.totalSupply(), postBurn + 50 ether, "the corrected estimate goes through");
+        assertEq(token.balanceOf(bob), 50 ether);
+    }
+
+    /// @dev The named instance of the shape below, spelled out end to end: this is the atomicity plain `mint`
+    ///      cannot give.
+    function test_GuardMint_RevertsWhenSupplyMovedAfterTheRead() public {
+        uint256 estimate = token.totalSupply();
+
+        vm.prank(custodian);
+        token.custodyBurn(alice, 1 ether);
+
+        vm.prank(minter);
+        _expectSupplyMismatch(INITIAL_MINT - 1 ether, estimate);
+        token.guardMint(bob, 50 ether, estimate);
+    }
+
+    function test_GuardMint_TracksSupplyBurnedVia_CustodyBurn() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.Custody);
+    }
+
+    function test_GuardMint_TracksSupplyBurnedVia_Burn() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.Self);
+    }
+
+    function test_GuardMint_TracksSupplyBurnedVia_BurnFrom() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.From);
+    }
+
+    /// @dev The mint-side race, and the likelier production incident: two minters (a retried job, two backend
+    ///      replicas) read the same supply, and only the first may act on it. The second's estimate is stale for
+    ///      a reason no burn caused, and must be refused rather than double-minting the same delta.
+    function test_GuardMint_SecondMinterActingOnTheSameReadIsRefused() public {
+        vm.prank(admin);
+        token.grantRole(MINTER_ROLE, carol);
+
+        uint256 sharedRead = token.totalSupply();
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, sharedRead);
+
+        vm.prank(carol);
+        _expectSupplyMismatch(sharedRead + 50 ether, sharedRead);
+        token.guardMint(bob, 50 ether, sharedRead);
+
+        assertEq(token.balanceOf(bob), 50 ether, "the delta lands once, not once per replica");
+        assertEq(token.totalSupply(), INITIAL_MINT + 50 ether);
+    }
+
+    /// @dev The operator's remedy: a refusal is recoverable by re-reading and retrying. `SupplyMismatch` carries
+    ///      `actualSupply` precisely so the corrected estimate is in the revert data — this asserts that value
+    ///      is usable, not merely present, and that the retry mints once rather than replaying the refused call.
+    function test_GuardMint_RetryWithTheCorrectedEstimateSucceeds() public {
+        uint256 stale = INITIAL_MINT - 1;
+
+        vm.prank(minter);
+        _expectSupplyMismatch(INITIAL_MINT, stale);
+        token.guardMint(bob, 50 ether, stale);
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, INITIAL_MINT); // the `actualSupply` the revert just reported
+
+        assertEq(token.totalSupply(), INITIAL_MINT + 50 ether, "a refusal must not latch the mint path shut");
+        assertEq(token.balanceOf(bob), 50 ether, "and the retry mints exactly once, not twice");
+    }
+}
