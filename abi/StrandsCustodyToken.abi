@@ -232,6 +232,29 @@
   },
   {
     "type": "function",
+    "name": "guardMint",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "estimatedSupply",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "hasRole",
     "inputs": [
       {
@@ -673,6 +696,22 @@
         "name": "spender",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SupplyMismatch",
+    "inputs": [
+      {
+        "name": "actualSupply",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "estimatedSupply",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   }
