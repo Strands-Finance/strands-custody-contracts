@@ -50,7 +50,9 @@ contract GuardMintTest is BaseTest {
     /// @dev The supply is read BEFORE the prank on purpose: a `token.*` call placed after a cheatcode consumes
     ///      it, so the call under test would run unpranked and fail the role gate instead of the guard. Same
     ///      reason `Base.t.sol` caches the role ids.
-    function testFuzz_GuardMint_AnyWrongEstimateReverts(uint96 estimate) public {
+    ///      The parameter is `uint256` rather than a narrower type because a wrong estimate is wrong at any
+    ///      magnitude: a `uint96` draw explores the bottom 2^96 of the range and never reaches the top of it.
+    function testFuzz_GuardMint_AnyWrongEstimateReverts(uint256 estimate) public {
         uint256 supply = token.totalSupply();
         vm.assume(estimate != supply);
 
@@ -59,6 +61,269 @@ contract GuardMintTest is BaseTest {
         token.guardMint(bob, 1 ether, estimate);
 
         assertEq(token.totalSupply(), supply, "a refused mint must not change supply, whatever the estimate was");
+    }
+
+    // ---------- zero is a value, not a sentinel ----------
+    //
+    // Every test above this line that passes `estimatedSupply == 0` does so on a token whose supply IS zero, and
+    // every test that mints passes a non-zero `amount`. Both zeros are therefore only ever RIGHT, which is exactly
+    // the input at which a special case hides: a guard reading `estimatedSupply == 0` as "unknown, skip the
+    // check", or an `amount == 0` early-out that returns before the comparison, passes the whole suite as it
+    // stands. These pin both zeros as ordinary values — checked like any other, correct only when actually right.
+
+    /// @dev The deterministic form of a case `testFuzz_GuardMint_AnyWrongEstimateReverts` only reaches by chance.
+    ///      A zero estimate against a funded token is the sentinel mutant's exact input, and it must be refused
+    ///      like any other wrong number.
+    function test_GuardMint_ZeroEstimate_RevertsAgainstANonZeroSupply() public {
+        vm.prank(minter);
+        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, INITIAL_MINT, 0));
+        token.guardMint(bob, 50 ether, 0);
+
+        assertEq(token.totalSupply(), INITIAL_MINT, "a zero estimate is a wrong estimate, not a waiver");
+        assertEq(token.balanceOf(bob), 0);
+    }
+
+    /// @dev The other half of that pair: burn the supply away entirely and the SAME call refused above must now
+    ///      go through. A token the custodian has emptied is back in the fresh-deployment state `guardMint`'s
+    ///      docs describe, and the guard has to say so — otherwise a fully-redeemed token could never be
+    ///      re-minted without a redeploy.
+    function test_GuardMint_ZeroEstimate_IsAcceptedOnceSupplyIsBurnedToZero() public {
+        vm.prank(custodian);
+        token.custodyBurn(alice, INITIAL_MINT);
+        assertEq(token.totalSupply(), 0, "precondition: the custodian destroyed the entire supply");
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, 0);
+
+        assertEq(token.totalSupply(), 50 ether, "zero is the real supply here, so the guard must honour it");
+        assertEq(token.balanceOf(bob), 50 ether);
+    }
+
+    /// @dev A zero-amount mint is a legitimate no-op — the backend mints a DELTA, and a delta of zero is what a
+    ///      reconciliation pass finds when nothing moved. It must succeed and change nothing.
+    function test_GuardMint_ZeroAmount_SucceedsAndMovesNothing() public {
+        _expectTransferEvent(address(0), bob, 0);
+        vm.prank(minter);
+        token.guardMint(bob, 0, INITIAL_MINT);
+
+        assertEq(token.totalSupply(), INITIAL_MINT, "a zero delta leaves supply exactly where it was");
+        assertEq(token.balanceOf(bob), 0);
+    }
+
+    /// @dev And it is still GUARDED. This is the test that kills an `if (amount == 0) return;` early-out: under
+    ///      that mutant the call below succeeds silently, telling a backend with a stale read that its estimate
+    ///      was accepted — the precise false confirmation `guardMint` exists to prevent.
+    function test_GuardMint_ZeroAmount_StillRejectsAWrongEstimate() public {
+        vm.prank(minter);
+        vm.expectRevert(
+            abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, INITIAL_MINT, INITIAL_MINT - 1)
+        );
+        token.guardMint(bob, 0, INITIAL_MINT - 1);
+
+        assertEq(token.totalSupply(), INITIAL_MINT, "a refused no-op is still a refusal");
+    }
+
+    /// @dev Both zeros at once, on a fresh token, and the mint path is not wedged afterwards: a no-op first call
+    ///      must leave the supply at zero so the NEXT call's estimate is still zero.
+    function test_GuardMint_ZeroAmountAndZeroEstimate_OnAFreshToken() public {
+        StrandsCustodyToken t = _deployWithDecimals(18);
+
+        vm.prank(minter);
+        t.guardMint(bob, 0, 0);
+        assertEq(t.totalSupply(), 0, "a no-op mint on an empty token leaves it empty");
+
+        vm.prank(minter);
+        t.guardMint(bob, 1 ether, 0);
+        assertEq(t.totalSupply(), 1 ether, "and the estimate the guard expects is still zero");
+    }
+
+    // ---------- what a caller observes ----------
+
+    /// @dev No test above asserts that `guardMint` mints via the ordinary ERC20 event, only that balances move.
+    ///      An indexer reconciling the ledger reads `Transfer(0x0, to, amount)`, so the guarded path must be
+    ///      indistinguishable from plain `mint` once the estimate passes.
+    function test_GuardMint_EmitsTransferFromTheZeroAddress() public {
+        _expectTransferEvent(address(0), bob, 50 ether);
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, INITIAL_MINT);
+    }
+
+    /// @dev The operator's remedy: a refusal is recoverable by re-reading and retrying. `SupplyMismatch` carries
+    ///      `actualSupply` precisely so the corrected estimate is in the revert data — this asserts that value
+    ///      is usable, not merely present, and that the retry mints once rather than replaying the refused call.
+    function test_GuardMint_RetryWithTheCorrectedEstimateSucceeds() public {
+        uint256 stale = INITIAL_MINT - 1;
+
+        vm.prank(minter);
+        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, INITIAL_MINT, stale));
+        token.guardMint(bob, 50 ether, stale);
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, INITIAL_MINT); // the `actualSupply` the revert just reported
+
+        assertEq(token.totalSupply(), INITIAL_MINT + 50 ether, "a refusal must not latch the mint path shut");
+        assertEq(token.balanceOf(bob), 50 ether, "and the retry mints exactly once, not twice");
+    }
+
+    // ---------- every path that moves supply ----------
+    //
+    // `custodyBurn` is the only supply-moving call the guard has ever been paired with. `burn` and `burnFrom`
+    // reduce totalSupply by exactly as much, and a concurrent MINT moves it the other way. The guard reads
+    // `totalSupply()` and nothing else, so all four are interchangeable here — which is the property under test,
+    // not an accident of how these are written.
+
+    enum BurnPath {
+        Custody,
+        Self,
+        From
+    }
+
+    /// @dev Destroy `amount` of `from`'s balance through `path`, doing whatever setup that path requires.
+    ///      `BurnAuthority.t.sol` owns which caller may use which entrypoint; here they differ only in route.
+    function _burnVia(BurnPath path, address from, uint256 amount) private {
+        if (path == BurnPath.Custody) {
+            vm.prank(custodian);
+            token.custodyBurn(from, amount);
+        } else if (path == BurnPath.Self) {
+            vm.prank(from); // `burn` destroys the CALLER's balance, so it has to be the custodian's first
+            token.transfer(custodian, amount);
+            vm.prank(custodian);
+            token.burn(amount);
+        } else {
+            vm.prank(from);
+            token.approve(custodian, amount);
+            vm.prank(custodian);
+            token.burnFrom(from, amount);
+        }
+    }
+
+    /// @dev One statement, three entrypoints: a burn voids an estimate read before it, AND the post-burn supply
+    ///      is the estimate the guard then accepts. The second half matters as much as the first — a guard that
+    ///      refused everything after a burn would pass a revert-only test while bricking the mint path.
+    function _assertGuardTracksSupplyBurnedVia(BurnPath path) private {
+        uint256 estimate = token.totalSupply();
+
+        _burnVia(path, alice, 100 ether);
+        uint256 postBurn = estimate - 100 ether;
+        assertEq(token.totalSupply(), postBurn, "precondition: this path destroyed exactly 100 ether");
+
+        vm.prank(minter);
+        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, postBurn, estimate));
+        token.guardMint(bob, 50 ether, estimate);
+        assertEq(token.totalSupply(), postBurn, "a refused mint must not move supply");
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, postBurn);
+        assertEq(token.totalSupply(), postBurn + 50 ether, "the corrected estimate goes through");
+        assertEq(token.balanceOf(bob), 50 ether);
+    }
+
+    function test_GuardMint_TracksSupplyBurnedVia_CustodyBurn() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.Custody);
+    }
+
+    function test_GuardMint_TracksSupplyBurnedVia_Burn() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.Self);
+    }
+
+    function test_GuardMint_TracksSupplyBurnedVia_BurnFrom() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.From);
+    }
+
+    /// @dev The mint-side race, and the likelier production incident: two minters (a retried job, two backend
+    ///      replicas) read the same supply, and only the first may act on it. The second's estimate is stale for
+    ///      a reason no burn caused, and must be refused rather than double-minting the same delta.
+    function test_GuardMint_SecondMinterActingOnTheSameReadIsRefused() public {
+        vm.prank(admin);
+        token.grantRole(MINTER_ROLE, carol);
+
+        uint256 sharedRead = token.totalSupply();
+
+        vm.prank(minter);
+        token.guardMint(bob, 50 ether, sharedRead);
+
+        vm.prank(carol);
+        vm.expectRevert(
+            abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, sharedRead + 50 ether, sharedRead)
+        );
+        token.guardMint(bob, 50 ether, sharedRead);
+
+        assertEq(token.balanceOf(bob), 50 ether, "the delta lands once, not once per replica");
+        assertEq(token.totalSupply(), INITIAL_MINT + 50 ether);
+    }
+
+    // ---------- interleaved mints and burns ----------
+
+    /// @dev The general claim the scripted tests above are instances of: through ANY interleaving of guarded
+    ///      mints and burns, the estimate the guard accepts is exactly the running supply — and the one next to
+    ///      it is refused. Every step asserts both directions, so a guard that drifted by one, or that latched
+    ///      after the first burn, fails here even having passed every fixed script. Mint amounts are drawn from
+    ///      0 upward, so zero-amount mints occur INSIDE the sequence too, at supplies no fixed test visits.
+    function testFuzz_GuardMint_TracksSupplyThroughAnyMintBurnSequence(uint8 steps, uint256 seed) public {
+        uint256 supply = token.totalSupply();
+        uint256 n = bound(uint256(steps), 1, 16);
+
+        for (uint256 i = 0; i < n; i++) {
+            // A fresh draw per step — `seed` alone would make every iteration take the same branch.
+            uint256 draw = uint256(keccak256(abi.encode(seed, i)));
+            bool burning = (draw & 1 == 1) && token.balanceOf(alice) > 0;
+
+            if (burning) {
+                uint256 amount = bound(draw >> 1, 1, token.balanceOf(alice));
+                vm.prank(custodian);
+                token.custodyBurn(alice, amount);
+                supply -= amount;
+            } else {
+                uint256 amount = bound(draw >> 1, 0, 1_000 ether);
+
+                // The neighbouring estimate must be refused at EVERY point in the sequence, not just the first.
+                if (supply != 0) {
+                    vm.prank(minter);
+                    vm.expectRevert(
+                        abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, supply, supply - 1)
+                    );
+                    token.guardMint(alice, amount, supply - 1);
+                }
+
+                vm.prank(minter);
+                token.guardMint(alice, amount, supply);
+                supply += amount;
+            }
+
+            assertEq(token.totalSupply(), supply, "the running supply is the guard's contract with the caller");
+        }
+    }
+
+    // ---------- boundaries ----------
+
+    /// @dev `guardMint` calls `_mint` DIRECTLY rather than through `mint` (see its @dev note), so ERC20's own
+    ///      recipient check is reached by a different route and is worth stating once.
+    function test_GuardMint_ToTheZeroAddress_Reverts() public {
+        vm.prank(minter);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        token.guardMint(address(0), 50 ether, INITIAL_MINT);
+
+        assertEq(token.totalSupply(), INITIAL_MINT);
+    }
+
+    /// @dev At the ceiling the guard still gates — a zero-amount mint with the right estimate goes through — and
+    ///      still does not mask arithmetic: the overflow surfaces as ERC20's own panic, not as a silent no-op or
+    ///      a SupplyMismatch that would misdiagnose the failure to whoever reads the revert.
+    function test_GuardMint_AtMaxSupply_GatesAndLetsOverflowPanic() public {
+        StrandsCustodyToken t = _deployWithDecimals(18);
+
+        vm.prank(minter);
+        t.guardMint(bob, type(uint256).max, 0);
+        assertEq(t.totalSupply(), type(uint256).max, "precondition: supply is at the ceiling");
+
+        vm.prank(minter);
+        t.guardMint(bob, 0, type(uint256).max); // a matching estimate still passes at the extreme
+
+        vm.prank(minter);
+        vm.expectRevert(stdError.arithmeticError);
+        t.guardMint(bob, 1, type(uint256).max);
+
+        assertEq(t.totalSupply(), type(uint256).max, "an overflowing mint must leave supply where it was");
     }
 
     // ---------- decimals independence ----------
