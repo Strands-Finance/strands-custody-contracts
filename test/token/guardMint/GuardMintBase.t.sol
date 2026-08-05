@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../../Base.t.sol";
-import { StrandsCustodyToken } from "../../../src/StrandsCustodyToken.sol";
 
 /// @title  Shared fixture for the `guardMint` suites
 /// @notice `guardMint` is one three-line function, so its tests are split by the CLAIM each file makes rather
@@ -18,24 +17,9 @@ import { StrandsCustodyToken } from "../../../src/StrandsCustodyToken.sol";
 ///
 ///         Everything here extends `Base.t.sol`, so the starting state is the same 18-dp, alice-funded fixture
 ///         every other suite under `test/` uses.
-abstract contract GuardMintBase is BaseTest {
-    /// @dev Expect the next call to be refused by the guard. A named helper for the same reason `Base.t.sol`
-    ///      has `_expectNotMinter`: the expectation appears in nearly every test here, and spelling out
-    ///      `abi.encodeWithSelector` each time buries which two numbers actually disagreed.
-    function _expectSupplyMismatch(uint256 actual, uint256 estimate) internal {
-        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, actual, estimate));
-    }
-
-    /// @dev A token at an arbitrary magnitude, wired like the fixture's. Metadata is deliberately generic —
-    ///      these suites are about arithmetic, and `Metadata.t.sol` owns naming. The role ids are keccak
-    ///      constants, so `Base.t.sol`'s cached MINTER_ROLE / CUSTODIAN_ROLE apply to any instance.
-    ///      Used well beyond `Decimals.t.sol`: any test needing a supply of zero, or room to reach the uint256
-    ///      ceiling, needs a token the fixture has not already funded.
-    function _deployWithDecimals(uint8 decimals_) internal returns (StrandsCustodyToken t) {
-        t = new StrandsCustodyToken(admin, decimals_, "Strands Custody Fixture", "scFIX");
-        vm.startPrank(admin);
-        t.grantRole(MINTER_ROLE, minter);
-        t.grantRole(CUSTODIAN_ROLE, custodian);
-        vm.stopPrank();
-    }
-}
+///
+/// @dev    This contract holds nothing of its own. `_expectSupplyMismatch` and `_deployWithDecimals` both moved
+///         up into `Base.t.sol` when `guardBurn` arrived and needed the identical pair — one helper per claim,
+///         not one per entrypoint. The type is kept so the suites below still name a common parent, and so a
+///         helper that turns out to be guardMint-specific has somewhere to land.
+abstract contract GuardMintBase is BaseTest { }
