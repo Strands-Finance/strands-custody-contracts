@@ -6,15 +6,55 @@ Custodial ERC20 token for the Strands platform.
 
 `StrandsCustodyToken` is an OpenZeppelin `ERC20Burnable` token gated by
 `AccessControl`. A balance here is a **claim against an off-chain ledger**, so
-destroying supply is `CUSTODIAN_ROLE`-only — and that covers the *entire* burn
-surface. The inherited `burn` and `burnFrom` are gated exactly like
-`custodyBurn(from, amount)`, which additionally needs no prior allowance. A
-holder cannot redeem themselves, and cannot delegate that power to anyone else
-via an ERC20 allowance. All three paths emit `CustodyBurn`, so a reconciler can
-track every unit of destroyed supply from that one event.
+destroying supply is privileged. A holder cannot redeem themselves, and cannot
+delegate that power to anyone else via an ERC20 allowance.
+
+The invariant to rely on is **every burn emits `CustodyBurn`** — not that every
+burn is a custodian. The burn surface is split across two roles:
+
+| Entrypoint | Role | Supply-checked |
+| --- | --- | --- |
+| `custodyBurn(from, amount)` | `CUSTODIAN_ROLE` | no |
+| `burn(amount)` | `CUSTODIAN_ROLE` | no |
+| `burnFrom(from, amount)` | `CUSTODIAN_ROLE` | no |
+| `guardBurn(from, amount, estimatedSupply)` | **`MINTER_ROLE`** | yes |
+
+`guardBurn` is the deliberate exception. It is the backend's burn path, and it
+is paired with `guardMint` rather than with the custodial entrypoints: both
+take the caller's `totalSupply()` reading and revert with `SupplyMismatch`
+unless the chain still agrees, so a stale read cannot move supply in either
+direction. All four paths emit `CustodyBurn`, so a reconciler tracks every unit
+of destroyed supply from that one event; its `burnedBy` field reports a minter
+on the guarded path and a custodian on the other three.
+
+The practical consequence: **revoking `CUSTODIAN_ROLE` does not stop every
+burn.** Closing the whole surface takes revoking `MINTER_ROLE` too.
 
 Transfers are ordinary, unrestricted ERC20: any holder may `transfer` /
 `transferFrom` to any address, exactly as with a stock token.
+
+## Deployment is two transactions
+
+The constructor takes only the token's own metadata and grants
+`DEFAULT_ADMIN_ROLE` to **the deployer**. Operating roles are seated by a
+separate `initialize(admin, minter, custodian)`, which is
+`onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs exactly once.
+
+Both guards are load-bearing. The role check is what makes `initialize`
+un-front-runnable — a CREATE deploy is visible the moment it lands, and with
+only a one-shot guard the first stranger to call would own the token's mint and
+burn authority. The one-shot guard is what stops an admin silently re-seating a
+different minter later under a call named "initialize".
+
+Between the two transactions the token is **inert** (nobody holds `MINTER_ROLE`
+or `CUSTODIAN_ROLE`, so every privileged entrypoint reverts) and **recoverable**
+(the deployer still holds admin and can finish the deploy). `initialize` revokes
+the deployer's own admin unless it *is* the admin, so the role graph afterwards
+is exactly what the arguments say.
+
+`initialize` is **not idempotent** — a second call reverts with
+`InvalidInitialization()`. A caller with a retry path must read `hasRole` first
+rather than re-calling.
 
 ## Token
 
@@ -38,26 +78,33 @@ The constructor rejects an empty `name_` or `symbol_` for that reason.
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role. No power over balances. |
-| `MINTER_ROLE` | `mint(to, amount)` and `guardMint(to, amount, estimatedSupply)` |
-| `CUSTODIAN_ROLE` | The entire burn surface: `custodyBurn(from, amount)` (no allowance needed), plus the inherited `burn` / `burnFrom` |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and call `initialize` once. No power over balances. |
+| `MINTER_ROLE` | `mint(to, amount)`, `guardMint(to, amount, estimatedSupply)`, `guardBurn(from, amount, estimatedSupply)` |
+| `CUSTODIAN_ROLE` | The unguarded burn surface: `custodyBurn(from, amount)` (no allowance needed), plus the inherited `burn` / `burnFrom` |
 
-The constructor grants `DEFAULT_ADMIN_ROLE` to the `admin` argument. The admin
-then grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to whichever addresses (ideally
-multisigs / timelocks) should hold them.
+The constructor grants `DEFAULT_ADMIN_ROLE` to the deployer; `initialize` then
+seats all three roles at whichever addresses (ideally multisigs / timelocks)
+should hold them, and hands admin on.
+
+`MINTER_ROLE` reaches a burn path. That is the one place the role names are not
+self-describing, and it is deliberate — see the `guardBurn` note above.
 
 ## API
 
 ```solidity
-constructor(address admin, uint8 decimals_, string memory name_, string memory symbol_);
+constructor(uint8 decimals_, string memory name_, string memory symbol_);       // admin -> msg.sender
+
+function initialize(address admin, address minter, address custodian) external; // DEFAULT_ADMIN_ROLE, once
 
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
-function guardMint(address to, uint256 amount, uint256 estimatedSupply) external;  // MINTER_ROLE
+function guardMint(address to, uint256 amount, uint256 estimatedSupply) external;   // MINTER_ROLE
+function guardBurn(address from, uint256 amount, uint256 estimatedSupply) external; // MINTER_ROLE
 function custodyBurn(address from, uint256 amount) external; // CUSTODIAN_ROLE — no allowance needed
 function burn(uint256 amount) public;                        // CUSTODIAN_ROLE (overridden)
 function burnFrom(address from, uint256 amount) public;      // CUSTODIAN_ROLE (overridden), spends allowance
 
-event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
+event CustodyBurn(address indexed burnedBy, address indexed from, uint256 amount);
+event Initialized(uint64 version);
 
 error SupplyMismatch(uint256 actualSupply, uint256 estimatedSupply);
 ```
@@ -102,16 +149,17 @@ on the reconciler's `Transfer` log for no reason. Redemption is the mirror
 image: custodian-driven, and the holder cannot initiate it.
 
 ```bash
-# 1. Deploy — admin receives DEFAULT_ADMIN_ROLE
+# 1. Deploy + initialize — the script does both in one broadcast, because a token left
+#    uninitialized is inert and only the deployer key can finish it.
 export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
 export TOKEN_NAME="Strands Custody USDC (BitGo)" TOKEN_SYMBOL="scUSDC"
+export MINTER_ADDRESS=0xMinter CUSTODIAN_ADDRESS=0xCustodian   # both default to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 
-# 2. Admin grants operating roles
-cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak "MINTER_ROLE") $MINTER \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
-cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak "CUSTODIAN_ROLE") $CUSTODIAN \
-  --rpc-url $RPC_URL --private-key $ADMIN_PK
+# 2. ...or, deploying by hand, seat the roles yourself. Run this from the DEPLOYER key —
+#    it is the only address holding DEFAULT_ADMIN_ROLE until this call hands it over.
+cast send $TOKEN "initialize(address,address,address)" $ADMIN $MINTER $CUSTODIAN \
+  --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
 
 # 3. Issue straight to the holder
 cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
@@ -128,15 +176,23 @@ cast send $TOKEN "custodyBurn(address,uint256)" $HOLDER 100ether \
 
 ## Security
 
-`CUSTODIAN_ROLE` is custodial: it can destroy any balance, and is the **only**
-party who can, so it is a liveness dependency as well as a security one. There
-is no self-service exit — if every custodian key is lost, no balance can ever be
-redeemed.
+`CUSTODIAN_ROLE` is custodial: it can destroy any balance. `MINTER_ROLE` can
+too, through `guardBurn` — so **both** are supply-destruction roles, and a
+threat model that treats `MINTER_ROLE` as issuance-only is wrong. Splitting the
+two across separate keys therefore hands the minter side a redemption path;
+today the backend's single mint-authority EOA holds both.
+
+There is no self-service exit. If every custodian *and* minter key is lost, no
+balance can ever be redeemed.
 
 `DEFAULT_ADMIN_ROLE` holds no power over balances. Its reach is the role graph:
-it can grant itself `CUSTODIAN_ROLE` and then destroy supply, but that grant is
-a separate transaction and lands on-chain as `RoleGranted`, so the escalation is
-visible rather than standing.
+it can grant itself `MINTER_ROLE` or `CUSTODIAN_ROLE` and then destroy supply,
+but that grant is a separate transaction and lands on-chain as `RoleGranted`, so
+the escalation is visible rather than standing.
+
+Between deploy and `initialize`, `DEFAULT_ADMIN_ROLE` sits on the **deployer
+key**. Keep that window short and the key controlled: it is the one address that
+can decide who the minter and custodian will be.
 
 In production:
 
@@ -149,10 +205,14 @@ In production:
   role admin, so once the last holder is gone no party can bootstrap a new one
   and the role graph freezes permanently — no new minter, no new custodian.
   Balances still move (transfers need no privilege), but if the existing
-  custodian keys are also lost, nothing can ever be redeemed again. Keep at
-  least two holders of each role.
-- Monitor `CustodyBurn`. Every path that destroys supply emits it, so it is the
-  complete record of redemption.
+  custodian and minter keys are also lost, nothing can ever be redeemed again.
+  Keep at least two holders of each role.
+- Monitor `CustodyBurn`. All four paths that destroy supply emit it, so it is
+  the complete record of redemption. Do not filter on `burnedBy` being a
+  custodian — `guardBurn` reports the minter.
+- **Initialize in the same operation as the deploy.** An uninitialized token is
+  harmless but unfinished, and the only key that can complete it is the one that
+  deployed it.
 
 ## Build & test
 
@@ -174,6 +234,8 @@ export DEPLOYER_PRIVATE_KEY=0x...
 export DECIMALS=6                                  # optional, defaults to 18
 export TOKEN_NAME="Strands Custody USDC (BitGo)"   # optional, defaults to "Strands Custody Token"
 export TOKEN_SYMBOL="scUSDC"                       # optional, defaults to "SCT"
+export MINTER_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
+export CUSTODIAN_ADDRESS=0x...                     # optional, defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --broadcast \
@@ -187,8 +249,9 @@ variable. But the label is permanent, and taking the default gives you a token
 indistinguishable from every other one on an explorer, which is the whole thing
 these arguments exist to fix.
 
-After deployment, the admin grants `MINTER_ROLE` and `CUSTODIAN_ROLE` to the
-intended operator addresses with `grantRole`.
+The script deploys and initializes in one broadcast, so the token is live when
+it returns. Deploying by hand instead means the deployer key must follow up with
+`initialize(admin, minter, custodian)` — until it does, the token is inert.
 
 ## .NET / Nethereum code generation
 

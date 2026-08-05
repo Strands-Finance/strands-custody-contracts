@@ -17,17 +17,17 @@ contract MetadataTest is BaseTest {
     }
 
     function test_Decimals_AreSetByConstructor() public {
-        assertEq(new StrandsCustodyToken(admin, 6, NAME, SYMBOL).decimals(), 6, "usdc");
-        assertEq(new StrandsCustodyToken(admin, 8, NAME, SYMBOL).decimals(), 8, "btc");
-        assertEq(new StrandsCustodyToken(admin, 18, NAME, SYMBOL).decimals(), 18, "eth");
+        assertEq(new StrandsCustodyToken(6, NAME, SYMBOL).decimals(), 6, "usdc");
+        assertEq(new StrandsCustodyToken(8, NAME, SYMBOL).decimals(), 8, "btc");
+        assertEq(new StrandsCustodyToken(18, NAME, SYMBOL).decimals(), 18, "eth");
     }
 
     /// @dev Two tokens, different metadata — the one shape that fails if the strings ever regress to being
     ///      hardcoded in the constructor. Asserting a single token's name against a constant cannot tell a
     ///      constructor argument apart from a literal that happens to match.
     function test_NameAndSymbol_AreSetByConstructor() public {
-        StrandsCustodyToken usdc = new StrandsCustodyToken(admin, 6, "Strands Custody USDC (BitGo)", "scUSDC");
-        StrandsCustodyToken weth = new StrandsCustodyToken(admin, 18, "Strands Custody WETH (Anchorage)", "scWETH");
+        StrandsCustodyToken usdc = new StrandsCustodyToken(6, "Strands Custody USDC (BitGo)", "scUSDC");
+        StrandsCustodyToken weth = new StrandsCustodyToken(18, "Strands Custody WETH (Anchorage)", "scWETH");
 
         assertEq(usdc.name(), "Strands Custody USDC (BitGo)");
         assertEq(usdc.symbol(), "scUSDC");
@@ -37,11 +37,11 @@ contract MetadataTest is BaseTest {
 
     function test_Constructor_RevertsOnEmptyName() public {
         vm.expectRevert(bytes("name=0"));
-        new StrandsCustodyToken(admin, 18, "", SYMBOL);
+        new StrandsCustodyToken(18, "", SYMBOL);
     }
 
     function test_Constructor_RevertsOnEmptySymbol() public {
         vm.expectRevert(bytes("symbol=0"));
-        new StrandsCustodyToken(admin, 18, NAME, "");
+        new StrandsCustodyToken(18, NAME, "");
     }
 }

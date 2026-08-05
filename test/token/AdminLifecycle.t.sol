@@ -273,11 +273,11 @@ contract AdminLifecycleTest is BaseTest {
         assertEq(token.balanceOf(bob), 100 ether, "transfers need no privilege, so they survive the freeze");
     }
 
-    /// @dev The end state the README's "keep at least two holders of each role"
-    ///      rule exists to prevent. With the last admin AND the custodian gone,
-    ///      balances still move freely but can never be redeemed — a holder
-    ///      cannot burn their own claim, and no new custodian can be appointed.
-    function test_LosingTheLastAdminAndCustodian_MakesRedemptionImpossible() public {
+    /// @dev Losing the last admin AND the custodian closes the CUSTODIAL exit —
+    ///      but not redemption itself, because `guardBurn` is MINTER_ROLE. The
+    ///      minter is what is left, and this pins that rather than leaving the
+    ///      surviving path to be discovered during an incident.
+    function test_LosingTheLastAdminAndCustodian_LeavesOnlyTheMintersGuardedBurn() public {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
         vm.prank(custodian);
@@ -298,7 +298,49 @@ contract AdminLifecycleTest is BaseTest {
         _expectNotAdmin(admin);
         token.grantRole(CUSTODIAN_ROLE, carol);
 
-        // ...yet the balance is still perfectly mobile
+        // ...yet the minter still holds a burn path, so supply is not frozen
+        vm.prank(minter);
+        token.guardBurn(alice, 1 ether, INITIAL_MINT);
+        assertEq(token.totalSupply(), INITIAL_MINT - 1 ether, "guardBurn survives the loss of the custodian");
+
+        // ...and the balance is still perfectly mobile
+        vm.prank(alice);
+        token.transfer(bob, 100 ether);
+        assertEq(token.balanceOf(bob), 100 ether, "value still moves");
+    }
+
+    /// @dev The end state the README's "keep at least two holders of each role"
+    ///      rule exists to prevent. It now takes THREE losses, not two: with the
+    ///      admin, the custodian and the minter all gone, balances still move
+    ///      freely but can never be redeemed by anyone, ever.
+    function test_LosingAdminCustodianAndMinter_MakesRedemptionImpossible() public {
+        vm.prank(custodian);
+        token.renounceRole(CUSTODIAN_ROLE, custodian);
+        vm.prank(minter);
+        token.renounceRole(MINTER_ROLE, minter);
+        vm.prank(admin);
+        token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
+
+        vm.prank(custodian);
+        _expectNotCustodian(custodian);
+        token.custodyBurn(alice, 1 ether);
+
+        vm.prank(minter);
+        _expectNotMinter(minter);
+        token.guardBurn(alice, 1 ether, INITIAL_MINT);
+
+        vm.prank(alice);
+        _expectNotCustodian(alice);
+        token.burn(INITIAL_MINT);
+
+        // and nobody can appoint a replacement for either role
+        vm.startPrank(admin);
+        _expectNotAdmin(admin);
+        token.grantRole(CUSTODIAN_ROLE, carol);
+        _expectNotAdmin(admin);
+        token.grantRole(MINTER_ROLE, carol);
+        vm.stopPrank();
+
         vm.prank(alice);
         token.transfer(bob, INITIAL_MINT);
 

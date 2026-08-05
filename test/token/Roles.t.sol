@@ -3,11 +3,11 @@ pragma solidity ^0.8.24;
 
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { BaseTest } from "../Base.t.sol";
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 
-/// @notice The admin control surface: constructor wiring, which role
-///         administers which, and who may grant or revoke. Rotation, renounce
-///         and the last-admin failure mode live in `AdminLifecycle.t.sol`.
+/// @notice The admin control surface: which role administers which, and who may
+///         grant or revoke. How the roles are first seated is
+///         `Initialization.t.sol`; rotation, renounce and the last-admin failure
+///         mode live in `AdminLifecycle.t.sol`.
 ///
 /// @dev    With the transfer allowlist gone, `DEFAULT_ADMIN_ROLE` has exactly
 ///         one power left — moving `MINTER_ROLE` and `CUSTODIAN_ROLE` around.
@@ -15,28 +15,20 @@ import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 ///         is pinned here directly rather than only implied by the mint and
 ///         burn suites' negative cases.
 contract RolesTest is BaseTest {
-    // ---------- constructor wiring ----------
+    // ---------- the seated role graph ----------
 
     function test_AdminHasDefaultAdminRole() public view {
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
     }
 
-    function test_Constructor_RevertsOnZeroAdmin() public {
-        vm.expectRevert(bytes("admin=0"));
-        new StrandsCustodyToken(address(0), 18, NAME, SYMBOL);
-    }
-
-    /// @dev The constructor grants the admin role and nothing else. An admin
-    ///      that arrived holding MINTER_ROLE or CUSTODIAN_ROLE would be able to
-    ///      mint or burn with no visible grant, which is the whole point of
-    ///      keeping the roles separate.
-    function test_Constructor_GrantsTheAdminRoleAndNothingElse() public {
-        StrandsCustodyToken fresh = new StrandsCustodyToken(admin, 18, NAME, SYMBOL);
-
-        assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), admin));
-        assertFalse(fresh.hasRole(fresh.MINTER_ROLE(), admin), "admin must not arrive as a minter");
-        assertFalse(fresh.hasRole(fresh.CUSTODIAN_ROLE(), admin), "admin must not arrive as a custodian");
-        assertEq(fresh.totalSupply(), 0, "a fresh token has no supply");
+    /// @dev The admin holds the admin role and nothing else. An admin that came
+    ///      out of `initialize` holding MINTER_ROLE or CUSTODIAN_ROLE would be
+    ///      able to mint or burn with no visible grant, which is the whole point
+    ///      of keeping the roles separate. `Initialization.t.sol` owns the
+    ///      seating itself; this is the standing state every suite here assumes.
+    function test_Admin_HoldsNoOperatingRole() public view {
+        assertFalse(token.hasRole(MINTER_ROLE, admin), "admin must not be a minter");
+        assertFalse(token.hasRole(CUSTODIAN_ROLE, admin), "admin must not be a custodian");
     }
 
     // ---------- role id / role admin wiring ----------
@@ -185,7 +177,11 @@ contract RolesTest is BaseTest {
         assertEq(token.totalSupply(), INITIAL_MINT - 1 ether);
     }
 
-    function test_RevokedCustodian_LosesEveryBurnPathImmediately() public {
+    /// @dev All three CUSTODIAN_ROLE entrypoints close together — and `guardBurn`
+    ///      does NOT, because it is gated on MINTER_ROLE. Revoking the custodian
+    ///      is therefore not the same as stopping every burn, which is the most
+    ///      likely wrong assumption an operator could carry into an incident.
+    function test_RevokedCustodian_LosesEveryCustodialBurnPathImmediately() public {
         vm.prank(alice);
         token.approve(custodian, 10 ether);
 
@@ -201,7 +197,27 @@ contract RolesTest is BaseTest {
         token.burn(1 ether);
         vm.stopPrank();
 
-        assertEq(token.totalSupply(), INITIAL_MINT, "revocation closes all three burn entrypoints at once");
+        assertEq(token.totalSupply(), INITIAL_MINT, "revocation closes all three custodial entrypoints at once");
+
+        // ...but the guarded burn is the minter's, and survives the custodian's revocation untouched.
+        vm.prank(minter);
+        token.guardBurn(alice, 1 ether, INITIAL_MINT);
+        assertEq(token.totalSupply(), INITIAL_MINT - 1 ether, "guardBurn is closed by revoking MINTER_ROLE, not this");
+    }
+
+    /// @dev The converse, so the split is pinned from both sides: revoking the
+    ///      MINTER closes `guardBurn` and leaves the custodial paths standing.
+    function test_RevokedMinter_LosesGuardBurnButLeavesTheCustodianBurning() public {
+        vm.prank(admin);
+        token.revokeRole(MINTER_ROLE, minter);
+
+        vm.prank(minter);
+        _expectNotMinter(minter);
+        token.guardBurn(alice, 1 ether, INITIAL_MINT);
+
+        vm.prank(custodian);
+        token.custodyBurn(alice, 1 ether);
+        assertEq(token.totalSupply(), INITIAL_MINT - 1 ether, "the custodial surface is untouched by a minter revoke");
     }
 
     /// @dev Roles stack rather than displace: one address may legitimately hold
@@ -231,8 +247,10 @@ contract RolesTest is BaseTest {
     }
 
     /// @dev Re-granting a held role and revoking an unheld one are both no-ops
-    ///      rather than reverts, which is what lets a recovery pass re-run the
-    ///      backend's `GrantMintAndCustodianRoles` safely.
+    ///      rather than reverts, which is what lets an operator re-run a role fix
+    ///      without first working out which half of it already landed. Note the
+    ///      contrast with `initialize`, which is deliberately NOT idempotent —
+    ///      see `Initialization.t.sol`.
     function test_GrantAndRevoke_AreIdempotent() public {
         vm.startPrank(admin);
         token.grantRole(MINTER_ROLE, minter); // already held
