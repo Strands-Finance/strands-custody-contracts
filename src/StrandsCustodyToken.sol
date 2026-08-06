@@ -14,21 +14,7 @@ import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable
 ///         burn is a MINTER_ROLE holder. A holder can do none of it, and cannot delegate the power via an
 ///         ERC20 allowance. Transfers are ordinary, unrestricted ERC20.
 ///
-/// @dev    Two roles, following OpenZeppelin's own division: DEFAULT_ADMIN_ROLE is GOVERNANCE (it administers
-///         the role graph, is its own admin, and carries {AccessControl}'s "extra precautions" warning — keep
-///         it cold), while MINTER_ROLE is the single hot OPERATING capability. The admin holds no operating
-///         power directly: to mint or burn it must first `grantRole(MINTER_ROLE, itself)`, which announces
-///         itself on-chain as `RoleGranted`. That visible step is the point.
-///
-///         The operational consequence of one operating role: `revokeRole(MINTER_ROLE, ...)` is the single
-///         lever that stops minting AND burning. There is no burn-only revoke.
-///
-///         Deployment is TWO steps: `constructor` then `initialize`. The constructor seats the deployer as
-///         DEFAULT_ADMIN_ROLE and grants no operating role, so a deployed-but-uninitialized token is inert
-///         (nothing mints, nothing burns) and recoverable (the deployer can still initialize it).
-///         `initialized()` reports which side of that gap the token is on, since `initialize` cannot be
-///         re-sent to find out.
-///
+/// @dev  
 ///         {Initializable} is used here as a call-this-exactly-once guard, in the same role
 ///         `SimpleInitializable` plays across the Strands contracts — NOT as an upgradeability story. This
 ///         token is NOT proxy-safe: `_decimals` is immutable and ERC20's name/symbol are written by the
