@@ -26,6 +26,8 @@ import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable
 ///         Deployment is TWO steps: `constructor` then `initialize`. The constructor seats the deployer as
 ///         DEFAULT_ADMIN_ROLE and grants no operating role, so a deployed-but-uninitialized token is inert
 ///         (nothing mints, nothing burns) and recoverable (the deployer can still initialize it).
+///         `initialized()` reports which side of that gap the token is on, since `initialize` cannot be
+///         re-sent to find out.
 ///
 ///         {Initializable} is used here as a call-this-exactly-once guard, in the same role
 ///         `SimpleInitializable` plays across the Strands contracts — NOT as an upgradeability story. This
@@ -83,7 +85,8 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
     ///        minter) that revoke is skipped rather than performed-and-undone.
     ///
     ///        NOT IDEMPOTENT. A second call reverts with `InvalidInitialization()`, unlike the `grantRole`
-    ///        sends this replaces. A caller with a retry path must read `hasRole` first rather than re-calling.
+    ///        sends this replaces. A caller with a retry path must read {initialized} first rather than
+    ///        re-calling and interpreting the revert.
     function initialize(address admin, address minter) external onlyRole(DEFAULT_ADMIN_ROLE) initializer {
         require(admin != address(0), "admin=0");
         require(minter != address(0), "minter=0");
@@ -92,6 +95,23 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
         _grantRole(MINTER_ROLE, minter);
 
         if (msg.sender != admin) _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+    }
+
+    /// @notice Whether {initialize} has already run. False means the token is still INERT: deployed, admin seated
+    ///         on the deployer, but no operating role granted, so nothing mints and nothing burns yet.
+    /// @dev    Exists for the deployer's own retry path. {initialize} is one-shot and reverts
+    ///         `InvalidInitialization()` on a second call, so anyone who lost track of whether their second
+    ///         transaction landed — an operator, or a backend whose bookkeeping write failed after the send —
+    ///         has to ASK rather than re-send and interpret a revert. OpenZeppelin keeps
+    ///         `_getInitializedVersion()` internal, so this is the only public answer.
+    ///
+    ///         A bool rather than the version number: this token is NOT proxy-safe (see the contract notes) and
+    ///         will never be reinitialized, so "which version" is a question it can never have a second answer to.
+    ///
+    ///         True also means the roles are seated as {initialize}'s arguments named them, and — because only
+    ///         the deployer can reach {initialize} at all — that they were seated by whoever deployed it.
+    function initialized() external view returns (bool) {
+        return _getInitializedVersion() != 0;
     }
 
     /// @notice Decimals of this token, set at deploy time to match the custodied asset.

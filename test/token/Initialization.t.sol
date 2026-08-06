@@ -264,6 +264,48 @@ contract InitializationTest is BaseTest {
         token.initialize(alice, alice);
     }
 
+    // ---------- reporting the gap ----------
+
+    /// @dev The read the whole two-transaction deploy rests on for anyone retrying it. Both sides of the gap
+    ///      in one test, because a getter stuck at either constant would pass a one-sided assertion.
+    function test_Initialized_ReportsBothSidesOfTheGap() public {
+        StrandsCustodyToken fresh = _deployUninitialized();
+        assertFalse(fresh.initialized(), "the constructor alone does not initialize");
+
+        fresh.initialize(admin, minter);
+        assertTrue(fresh.initialized(), "and initialize is what flips it");
+    }
+
+    /// @dev It must track the ONE SHOT, not the caller's luck: a refused attempt leaves it false (the shot is
+    ///      still available), and a refused re-entry leaves it true. This is the property a retrying deployer
+    ///      reads it for — false means "send it", true means "do not".
+    function test_Initialized_TracksTheShotRatherThanTheLastAttempt() public {
+        StrandsCustodyToken fresh = _deployUninitialized();
+        address attacker = makeAddr("attacker");
+
+        vm.prank(attacker);
+        _expectMissingRole(attacker, DEFAULT_ADMIN_ROLE);
+        fresh.initialize(attacker, attacker);
+        assertFalse(fresh.initialized(), "a rejected attempt must not read as initialized");
+
+        vm.expectRevert(bytes("minter=0"));
+        fresh.initialize(admin, address(0));
+        assertFalse(fresh.initialized(), "nor must a rejected argument");
+
+        fresh.initialize(admin, minter);
+
+        vm.prank(admin);
+        _expectAlreadyInitialized();
+        fresh.initialize(admin, carol);
+        assertTrue(fresh.initialized(), "and a refused re-entry does not un-initialize it");
+    }
+
+    /// @dev The fixture's token is initialized by the harness, so this pins that the getter agrees with the
+    ///      state every other suite is written against — not just with tokens this file deployed itself.
+    function test_Initialized_IsTrueForTheFixtureToken() public view {
+        assertTrue(token.initialized());
+    }
+
     // ---------- argument validation ----------
 
     function test_Initialize_RevertsOnZeroAdmin() public {
