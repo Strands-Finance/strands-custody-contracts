@@ -7,7 +7,7 @@ import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable
 import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
 
 /// @title  Shared test fixture
-/// @notice Deploys the token, seats MINTER_ROLE / CUSTODIAN_ROLE through
+/// @notice Deploys the token, seats DEFAULT_ADMIN_ROLE / MINTER_ROLE through
 ///         `initialize` and funds `alice` with `INITIAL_MINT`. Every suite under
 ///         `test/` extends this so the starting state is identical across files.
 abstract contract BaseTest is Test {
@@ -15,7 +15,6 @@ abstract contract BaseTest is Test {
 
     address internal admin = makeAddr("admin");
     address internal minter = makeAddr("minter");
-    address internal custodian = makeAddr("custodian");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
@@ -38,9 +37,8 @@ abstract contract BaseTest is Test {
     ///      hand, one line at a time.
     bytes32 internal DEFAULT_ADMIN_ROLE;
     bytes32 internal MINTER_ROLE;
-    bytes32 internal CUSTODIAN_ROLE;
 
-    event CustodyBurn(address indexed burnedBy, address indexed from, uint256 amount);
+    event Burned(address indexed burnedBy, address indexed from, uint256 amount);
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Initialized(uint64 version);
 
@@ -52,11 +50,10 @@ abstract contract BaseTest is Test {
 
         DEFAULT_ADMIN_ROLE = token.DEFAULT_ADMIN_ROLE();
         MINTER_ROLE = token.MINTER_ROLE();
-        CUSTODIAN_ROLE = token.CUSTODIAN_ROLE();
 
         // Hands DEFAULT_ADMIN_ROLE to `admin` and revokes this contract's, so `admin` is the ONLY holder —
         // `AdminLifecycle.t.sol`'s "last admin" assertions depend on that being exactly true.
-        token.initialize(admin, minter, custodian);
+        token.initialize(admin, minter);
 
         vm.prank(minter);
         token.mint(alice, INITIAL_MINT);
@@ -66,14 +63,14 @@ abstract contract BaseTest is Test {
 
     /// @dev A token at an arbitrary magnitude, wired like the fixture's. Metadata is deliberately generic —
     ///      the suites that use this are about arithmetic, and `Metadata.t.sol` owns naming. The role ids are
-    ///      keccak constants, so the cached MINTER_ROLE / CUSTODIAN_ROLE apply to any instance.
+    ///      keccak constants, so the cached MINTER_ROLE applies to any instance.
     function _deployWithDecimals(uint8 decimals_) internal returns (StrandsCustodyToken t) {
         t = new StrandsCustodyToken(decimals_, "Strands Custody Fixture", "scFIX");
-        t.initialize(admin, minter, custodian);
+        t.initialize(admin, minter);
     }
 
-    /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no minter, no custodian, and this test contract
-    ///      still holding DEFAULT_ADMIN_ROLE. The state a deploy leaves behind before its second transaction.
+    /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no minter, and this test contract still holding
+    ///      DEFAULT_ADMIN_ROLE. The state a deploy leaves behind before its second transaction.
     function _deployUninitialized() internal returns (StrandsCustodyToken t) {
         t = new StrandsCustodyToken(18, NAME, SYMBOL);
     }
@@ -91,10 +88,6 @@ abstract contract BaseTest is Test {
 
     function _expectNotMinter(address caller) internal {
         _expectMissingRole(caller, MINTER_ROLE);
-    }
-
-    function _expectNotCustodian(address caller) internal {
-        _expectMissingRole(caller, CUSTODIAN_ROLE);
     }
 
     /// @dev Expect `renounceRole` to be rejected for a confirmation argument that
@@ -115,11 +108,11 @@ abstract contract BaseTest is Test {
 
     // ---------- event expectations ----------
 
-    /// @dev `by` rather than `custodian` — the fixture already binds that name, and on `guardBurn` the burner
-    ///      is a minter anyway.
-    function _expectCustodyBurnEvent(address by, address from, uint256 amount) internal {
+    /// @dev `by` rather than `minter` — the fixture already binds that name, and the burner is only ever the
+    ///      fixture's minter by convention, not by anything the event itself requires.
+    function _expectBurnedEvent(address by, address from, uint256 amount) internal {
         vm.expectEmit(true, true, false, true, address(token));
-        emit CustodyBurn(by, from, amount);
+        emit Burned(by, from, amount);
     }
 
     function _expectTransferEvent(address from, address to, uint256 value) internal {

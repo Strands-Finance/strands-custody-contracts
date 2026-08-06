@@ -9,11 +9,12 @@ import { BaseTest } from "../Base.t.sol";
 ///         `Initialization.t.sol`; rotation, renounce and the last-admin failure
 ///         mode live in `AdminLifecycle.t.sol`.
 ///
-/// @dev    With the transfer allowlist gone, `DEFAULT_ADMIN_ROLE` has exactly
-///         one power left — moving `MINTER_ROLE` and `CUSTODIAN_ROLE` around.
-///         That makes `grantRole` / `revokeRole` the WHOLE admin surface, so it
-///         is pinned here directly rather than only implied by the mint and
-///         burn suites' negative cases.
+/// @dev    Two roles, following OpenZeppelin's own division: DEFAULT_ADMIN_ROLE
+///         is governance and MINTER_ROLE is the single operating capability.
+///         DEFAULT_ADMIN_ROLE therefore has exactly one power — moving
+///         MINTER_ROLE around — which makes `grantRole` / `revokeRole` the WHOLE
+///         admin surface, pinned here directly rather than only implied by the
+///         mint and burn suites' negative cases.
 contract RolesTest is BaseTest {
     // ---------- the seated role graph ----------
 
@@ -22,24 +23,22 @@ contract RolesTest is BaseTest {
     }
 
     /// @dev The admin holds the admin role and nothing else. An admin that came
-    ///      out of `initialize` holding MINTER_ROLE or CUSTODIAN_ROLE would be
-    ///      able to mint or burn with no visible grant, which is the whole point
-    ///      of keeping the roles separate. `Initialization.t.sol` owns the
-    ///      seating itself; this is the standing state every suite here assumes.
+    ///      out of `initialize` holding MINTER_ROLE would be able to mint or burn
+    ///      with no visible grant, which is the whole point of keeping governance
+    ///      and operations apart. `Initialization.t.sol` owns the seating itself;
+    ///      this is the standing state every suite here assumes.
     function test_Admin_HoldsNoOperatingRole() public view {
         assertFalse(token.hasRole(MINTER_ROLE, admin), "admin must not be a minter");
-        assertFalse(token.hasRole(CUSTODIAN_ROLE, admin), "admin must not be a custodian");
     }
 
     // ---------- role id / role admin wiring ----------
 
-    /// @dev The ids are part of the deployed ABI: the backend's Nethereum
-    ///      bindings resolve them by calling `MINTER_ROLE()` / `CUSTODIAN_ROLE()`
-    ///      and then grant against the returned bytes32. Changing either string
-    ///      would silently orphan every already-granted role on a live token.
+    /// @dev The id is part of the deployed ABI: the backend's Nethereum bindings
+    ///      resolve it by calling `MINTER_ROLE()` and then grant against the
+    ///      returned bytes32. Changing the string would silently orphan every
+    ///      already-granted role on a live token.
     function test_RoleIds_AreTheKeccakOfTheirNames() public view {
         assertEq(MINTER_ROLE, keccak256("MINTER_ROLE"));
-        assertEq(CUSTODIAN_ROLE, keccak256("CUSTODIAN_ROLE"));
         assertEq(DEFAULT_ADMIN_ROLE, bytes32(0), "OZ's DEFAULT_ADMIN_ROLE is the zero id");
     }
 
@@ -49,7 +48,6 @@ contract RolesTest is BaseTest {
     ///      changing a single function signature.
     function test_DefaultAdminRole_AdministersEveryRole() public view {
         assertEq(token.getRoleAdmin(MINTER_ROLE), DEFAULT_ADMIN_ROLE);
-        assertEq(token.getRoleAdmin(CUSTODIAN_ROLE), DEFAULT_ADMIN_ROLE);
     }
 
     /// @dev DEFAULT_ADMIN_ROLE being its own admin is what makes the last-admin
@@ -57,6 +55,26 @@ contract RolesTest is BaseTest {
     ///      role to bootstrap from.
     function test_DefaultAdminRole_IsItsOwnAdmin() public view {
         assertEq(token.getRoleAdmin(DEFAULT_ADMIN_ROLE), DEFAULT_ADMIN_ROLE);
+    }
+
+    /// @dev The role that used to gate the unguarded burn surface is GONE, not
+    ///      merely unused — asserted rather than assumed, because a stale
+    ///      `CUSTODIAN_ROLE()` left on the ABI would let an operator grant a role
+    ///      that no longer opens anything and believe a key was provisioned.
+    ///      Probed by selector so it does not depend on the binding: an absent
+    ///      function has no dispatch entry and the raw call fails.
+    function test_CustodianRole_HasNoDispatchEntry() public {
+        (bool custodianRoleExists,) = address(token).call(abi.encodeWithSignature("CUSTODIAN_ROLE()"));
+        assertFalse(custodianRoleExists, "CUSTODIAN_ROLE() must no longer be part of the ABI");
+
+        (bool custodyBurnExists,) =
+            address(token).call(abi.encodeWithSignature("custodyBurn(address,uint256)", alice, uint256(1)));
+        assertFalse(custodyBurnExists, "custodyBurn was renamed to adminBurn; the old selector must be gone");
+
+        // The control: the same probe against a function that DOES exist succeeds, so the two assertions above
+        // are about these selectors and not about the probe technique.
+        (bool minterRoleExists,) = address(token).call(abi.encodeWithSignature("MINTER_ROLE()"));
+        assertTrue(minterRoleExists, "the probe must be able to find a live entrypoint");
     }
 
     // ---------- who may grant and revoke ----------
@@ -71,56 +89,52 @@ contract RolesTest is BaseTest {
         assertFalse(token.hasRole(MINTER_ROLE, carol));
     }
 
-    function test_AdminCanRevokeCustodian() public {
+    function test_AdminCanRevokeTheSeatedMinter() public {
         vm.prank(admin);
-        token.revokeRole(CUSTODIAN_ROLE, custodian);
-        assertFalse(token.hasRole(CUSTODIAN_ROLE, custodian));
+        token.revokeRole(MINTER_ROLE, minter);
+        assertFalse(token.hasRole(MINTER_ROLE, minter));
     }
 
     /// @dev The load-bearing admin control. Without this the roles are
-    ///      decorative: anyone could appoint themselves a custodian and burn.
+    ///      decorative: anyone could appoint themselves a minter and burn.
     function test_NonAdmin_CannotGrantRole() public {
         vm.prank(alice);
         _expectNotAdmin(alice);
-        token.grantRole(CUSTODIAN_ROLE, alice);
+        token.grantRole(MINTER_ROLE, alice);
 
-        assertFalse(token.hasRole(CUSTODIAN_ROLE, alice), "no self-appointment");
+        assertFalse(token.hasRole(MINTER_ROLE, alice), "no self-appointment");
     }
 
     function test_NonAdmin_CannotRevokeRole() public {
         vm.prank(alice);
         _expectNotAdmin(alice);
-        token.revokeRole(CUSTODIAN_ROLE, custodian);
+        token.revokeRole(MINTER_ROLE, minter);
 
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, custodian), "an outsider cannot dismantle the role graph");
+        assertTrue(token.hasRole(MINTER_ROLE, minter), "an outsider cannot dismantle the role graph");
     }
 
-    /// @dev Holding one of the operating roles is not a shortcut into the admin
-    ///      one. The custodian case is the sharpest: a custodian who could grant
-    ///      would be able to appoint a second custodian and defeat any
-    ///      "keep two independent keys" policy single-handedly.
-    function test_MinterAndCustodian_CannotGrantRoles() public {
+    /// @dev Holding the operating role is not a shortcut into the admin one. A
+    ///      minter who could grant would be able to appoint a second minter and
+    ///      defeat any "keep the governance key separate" policy single-handedly
+    ///      — and with one operating role covering both mint and burn, that is
+    ///      now the whole of the operating power.
+    function test_Minter_CannotGrantRoles() public {
         vm.prank(minter);
         _expectNotAdmin(minter);
         token.grantRole(MINTER_ROLE, carol);
 
-        vm.prank(custodian);
-        _expectNotAdmin(custodian);
-        token.grantRole(CUSTODIAN_ROLE, carol);
-
         assertFalse(token.hasRole(MINTER_ROLE, carol));
-        assertFalse(token.hasRole(CUSTODIAN_ROLE, carol));
     }
 
     /// @dev No address is special. `admin` is excluded because it is the one
-    ///      address for which the call legitimately succeeds; `minter` and
-    ///      `custodian` because `setUp` already granted them the role this may
-    ///      pick, so the closing `hasRole` would read `true` for a reason that
-    ///      has nothing to do with the rejected grant. That those two cannot
-    ///      grant either is `test_MinterAndCustodian_CannotGrantRoles` above.
+    ///      address for which the call legitimately succeeds; `minter` because
+    ///      `setUp` already granted it the role this may pick, so the closing
+    ///      `hasRole` would read `true` for a reason that has nothing to do with
+    ///      the rejected grant. That the minter cannot grant either is
+    ///      `test_Minter_CannotGrantRoles` above.
     function testFuzz_ArbitraryNonAdmin_CannotGrantAnyRole(address caller, uint8 which) public {
-        vm.assume(caller != admin && caller != minter && caller != custodian);
-        bytes32 role = which % 3 == 0 ? MINTER_ROLE : which % 3 == 1 ? CUSTODIAN_ROLE : DEFAULT_ADMIN_ROLE;
+        vm.assume(caller != admin && caller != minter);
+        bytes32 role = which % 2 == 0 ? MINTER_ROLE : DEFAULT_ADMIN_ROLE;
 
         vm.prank(caller);
         _expectNotAdmin(caller);
@@ -133,9 +147,9 @@ contract RolesTest is BaseTest {
     ///      privileges, and does not have to guess from a reverting write.
     function testFuzz_AnyCaller_CanReadTheRoleGraph(address caller) public {
         vm.prank(caller);
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, custodian));
+        assertTrue(token.hasRole(MINTER_ROLE, minter));
         vm.prank(caller);
-        assertEq(token.getRoleAdmin(CUSTODIAN_ROLE), DEFAULT_ADMIN_ROLE);
+        assertEq(token.getRoleAdmin(MINTER_ROLE), DEFAULT_ADMIN_ROLE);
     }
 
     // ---------- grants and revokes take effect immediately ----------
@@ -153,88 +167,72 @@ contract RolesTest is BaseTest {
         assertEq(token.balanceOf(carol), 1 ether, "a grant is effective in the very next call");
     }
 
-    function test_RevokedMinter_LosesMintImmediately() public {
-        vm.prank(admin);
-        token.revokeRole(MINTER_ROLE, minter);
-
-        vm.prank(minter);
-        _expectNotMinter(minter);
-        token.mint(bob, 1 ether);
-
-        assertEq(token.totalSupply(), INITIAL_MINT, "a revoked minter cannot issue");
-    }
-
-    function test_NewlyGrantedCustodian_CanBurnImmediately() public {
+    function test_NewlyGrantedMinter_CanBurnImmediately() public {
         vm.prank(carol);
-        _expectNotCustodian(carol);
-        token.custodyBurn(alice, 1 ether);
+        _expectNotMinter(carol);
+        token.adminBurn(alice, 1 ether);
 
         vm.prank(admin);
-        token.grantRole(CUSTODIAN_ROLE, carol);
+        token.grantRole(MINTER_ROLE, carol);
 
         vm.prank(carol);
-        token.custodyBurn(alice, 1 ether);
+        token.adminBurn(alice, 1 ether);
         assertEq(token.totalSupply(), INITIAL_MINT - 1 ether);
     }
 
-    /// @dev All three CUSTODIAN_ROLE entrypoints close together — and `guardBurn`
-    ///      does NOT, because it is gated on MINTER_ROLE. Revoking the custodian
-    ///      is therefore not the same as stopping every burn, which is the most
-    ///      likely wrong assumption an operator could carry into an incident.
-    function test_RevokedCustodian_LosesEveryCustodialBurnPathImmediately() public {
+    /// @dev The single most important consequence of collapsing the operating
+    ///      roles into one, and the assertion an operator's incident response
+    ///      rests on: `revokeRole(MINTER_ROLE, ...)` closes EVERY path that can
+    ///      change supply — both directions, all six entrypoints — in one
+    ///      transaction. Before this change it would have closed only `mint`,
+    ///      `guardMint` and `guardBurn`, leaving three custodial burn paths open.
+    ///      The flip side is that there is no longer a burn-only revoke; stopping
+    ///      burning stops minting too.
+    function test_RevokedMinter_LosesEveryBurnAndMintPathImmediately() public {
         vm.prank(alice);
-        token.approve(custodian, 10 ether);
-
-        vm.prank(admin);
-        token.revokeRole(CUSTODIAN_ROLE, custodian);
-
-        vm.startPrank(custodian);
-        _expectNotCustodian(custodian);
-        token.custodyBurn(alice, 1 ether);
-        _expectNotCustodian(custodian);
-        token.burnFrom(alice, 1 ether);
-        _expectNotCustodian(custodian);
-        token.burn(1 ether);
-        vm.stopPrank();
-
-        assertEq(token.totalSupply(), INITIAL_MINT, "revocation closes all three custodial entrypoints at once");
-
-        // ...but the guarded burn is the minter's, and survives the custodian's revocation untouched.
+        token.approve(minter, 10 ether);
         vm.prank(minter);
-        token.guardBurn(alice, 1 ether, INITIAL_MINT);
-        assertEq(token.totalSupply(), INITIAL_MINT - 1 ether, "guardBurn is closed by revoking MINTER_ROLE, not this");
-    }
+        token.mint(minter, 10 ether);
 
-    /// @dev The converse, so the split is pinned from both sides: revoking the
-    ///      MINTER closes `guardBurn` and leaves the custodial paths standing.
-    function test_RevokedMinter_LosesGuardBurnButLeavesTheCustodianBurning() public {
         vm.prank(admin);
         token.revokeRole(MINTER_ROLE, minter);
 
-        vm.prank(minter);
+        vm.startPrank(minter);
         _expectNotMinter(minter);
-        token.guardBurn(alice, 1 ether, INITIAL_MINT);
+        token.mint(bob, 1 ether);
+        _expectNotMinter(minter);
+        token.guardMint(bob, 1 ether, INITIAL_MINT + 10 ether);
+        _expectNotMinter(minter);
+        token.adminBurn(alice, 1 ether);
+        _expectNotMinter(minter);
+        token.guardBurn(alice, 1 ether, INITIAL_MINT + 10 ether);
+        _expectNotMinter(minter);
+        token.burn(1 ether);
+        _expectNotMinter(minter);
+        token.burnFrom(alice, 1 ether);
+        vm.stopPrank();
 
-        vm.prank(custodian);
-        token.custodyBurn(alice, 1 ether);
-        assertEq(token.totalSupply(), INITIAL_MINT - 1 ether, "the custodial surface is untouched by a minter revoke");
+        assertEq(token.totalSupply(), INITIAL_MINT + 10 ether, "one revoke closes both directions at once");
+        assertEq(token.allowance(alice, minter), 10 ether, "and no rejected path consumed the allowance");
     }
 
     /// @dev Roles stack rather than displace: one address may legitimately hold
-    ///      several. Worth pinning because it is also the shape of an
-    ///      escalation, which `AdminLifecycle.t.sol` covers from that angle.
+    ///      both. Worth pinning because it is also the shape of an escalation,
+    ///      which `AdminLifecycle.t.sol` covers from that angle — and it is the
+    ///      backend's own shape, where one mint-authority EOA is admin and
+    ///      minter at once.
     function test_RolesStack_OneAddressMayHoldSeveral() public {
         vm.startPrank(admin);
         token.grantRole(MINTER_ROLE, carol);
-        token.grantRole(CUSTODIAN_ROLE, carol);
+        token.grantRole(DEFAULT_ADMIN_ROLE, carol);
         vm.stopPrank();
 
         assertTrue(token.hasRole(MINTER_ROLE, carol));
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, carol));
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, carol));
 
         vm.startPrank(carol);
         token.mint(carol, 5 ether);
-        token.custodyBurn(carol, 5 ether);
+        token.adminBurn(carol, 5 ether);
         vm.stopPrank();
 
         assertEq(token.totalSupply(), INITIAL_MINT);
@@ -243,7 +241,7 @@ contract RolesTest is BaseTest {
         vm.prank(admin);
         token.revokeRole(MINTER_ROLE, carol);
         assertFalse(token.hasRole(MINTER_ROLE, carol));
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, carol), "revoking one role must not strip the others");
+        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, carol), "revoking one role must not strip the others");
     }
 
     /// @dev Re-granting a held role and revoking an unheld one are both no-ops
@@ -273,17 +271,17 @@ contract RolesTest is BaseTest {
 
     function test_Grant_EmitsRoleGranted() public {
         vm.expectEmit(true, true, true, false, address(token));
-        emit IAccessControl.RoleGranted(CUSTODIAN_ROLE, carol, admin);
+        emit IAccessControl.RoleGranted(MINTER_ROLE, carol, admin);
 
         vm.prank(admin);
-        token.grantRole(CUSTODIAN_ROLE, carol);
+        token.grantRole(MINTER_ROLE, carol);
     }
 
     function test_Revoke_EmitsRoleRevoked() public {
         vm.expectEmit(true, true, true, false, address(token));
-        emit IAccessControl.RoleRevoked(CUSTODIAN_ROLE, custodian, admin);
+        emit IAccessControl.RoleRevoked(MINTER_ROLE, minter, admin);
 
         vm.prank(admin);
-        token.revokeRole(CUSTODIAN_ROLE, custodian);
+        token.revokeRole(MINTER_ROLE, minter);
     }
 }

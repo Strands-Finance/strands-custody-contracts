@@ -8,11 +8,10 @@ import { GuardMintBase } from "./GuardMintBase.t.sol";
 ///         authorization mechanism, and must never be mistaken for one. So the gate in front of it is stated
 ///         here in full rather than as the single negative case it used to be.
 ///
-///         Two principals are the sharp ones. `admin` holds DEFAULT_ADMIN_ROLE, which ADMINISTERS MINTER_ROLE
-///         but does not confer it — an admin who could mint would make "the minter key is separate" untrue
-///         without any grant appearing on chain. `custodian` can destroy supply through three entrypoints; that
-///         it cannot create any is the separation `Roles.t.sol` establishes for the role graph and this pins for
-///         this entrypoint.
+///         `admin` is the sharp principal. It holds DEFAULT_ADMIN_ROLE, which ADMINISTERS MINTER_ROLE but does
+///         not confer it — an admin who could mint would make "the minter key is separate" untrue without any
+///         grant appearing on chain. That separation is what `Roles.t.sol` establishes for the role graph and
+///         this pins for this entrypoint.
 ///
 ///         `Roles.t.sol` owns the role graph itself (who may grant, role admins, event emission). This file
 ///         only asks what each standing means at `guardMint`'s door.
@@ -24,10 +23,10 @@ contract GuardMintAuthorityTest is GuardMintBase {
     }
 
     /// @dev Every unprivileged principal in the fixture, each with a CORRECT estimate so the only possible
-    ///      reason for refusal is the role. A holder, the recipient, a bystander, the custodian and the admin
-    ///      are all equally outside.
+    ///      reason for refusal is the role. A holder, the recipient, a bystander and the admin are all equally
+    ///      outside.
     function test_EveryPrincipalWithoutMinterRole_IsRefused() public {
-        address[5] memory outsiders = [alice, bob, carol, custodian, admin];
+        address[4] memory outsiders = [alice, bob, carol, admin];
 
         for (uint256 i = 0; i < outsiders.length; i++) {
             assertFalse(token.hasRole(MINTER_ROLE, outsiders[i]), "precondition: this principal is not a minter");

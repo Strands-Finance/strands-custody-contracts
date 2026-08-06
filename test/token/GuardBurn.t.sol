@@ -12,9 +12,9 @@ import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
 ///         comparison against the same `totalSupply()`, so the same classes of fault apply (a zero read as a
 ///         sentinel, an amount-zero early-out, a decimals-scaled comparison) and the same tests kill them.
 ///
-///         What is NOT mirrored is the role. `guardBurn` is MINTER_ROLE while every other burn entrypoint is
-///         CUSTODIAN_ROLE, so this file owns the negative case that matters most: a CUSTODIAN must be refused
-///         here. `BurnAuthority.t.sol` owns the other half of that split.
+///         The role is mirrored too: `guardBurn` is MINTER_ROLE, as is every other burn entrypoint.
+///         `BurnAuthority.t.sol` owns who may reach the burn surface at all; this file owns what the GUARD does
+///         once they are through the gate.
 contract GuardBurnTest is BaseTest {
     function test_MinterCanGuardBurn_WhenEstimateMatches() public {
         vm.prank(minter);
@@ -34,7 +34,7 @@ contract GuardBurnTest is BaseTest {
     }
 
     /// @dev The exact incident shape, in the burn direction: a supply moving AFTER the caller read it (here: a
-    ///      mint between read and burn) must void the estimate. This is the atomicity a plain `custodyBurn`
+    ///      mint between read and burn) must void the estimate. This is the atomicity a plain `adminBurn`
     ///      cannot give.
     function test_GuardBurn_RevertsWhenSupplyMovedAfterTheRead() public {
         uint256 estimate = token.totalSupply();
@@ -55,22 +55,23 @@ contract GuardBurnTest is BaseTest {
         token.guardBurn(alice, 1, INITIAL_MINT);
     }
 
-    /// @dev The sharp case, and the reason this contract's burn surface is no longer uniformly custodial. The
-    ///      custodian owns `custodyBurn`, `burn` and `burnFrom` — and is refused HERE. Getting this backwards
-    ///      would make `guardBurn` reachable by both roles, quietly widening who can destroy supply beyond
-    ///      what the contract documents.
-    function test_Custodian_CannotGuardBurn() public {
-        vm.prank(custodian);
-        _expectNotMinter(custodian);
-        token.guardBurn(alice, 50 ether, INITIAL_MINT);
+    /// @dev A holder with a balance is refused here just as they are at every other burn entrypoint — owning
+    ///      the tokens is not authority to destroy them. Written against `bob` rather than `alice` so the
+    ///      refusal cannot be confused with a self-burn restriction, and paired with the minter succeeding on
+    ///      the same call so the rejection is about the ROLE GATE and not the arguments.
+    function test_FundedHolder_CannotGuardBurn() public {
+        vm.prank(alice);
+        token.transfer(bob, 50 ether);
 
-        assertEq(token.totalSupply(), INITIAL_MINT, "the custodian's burn powers stop at the guarded path");
+        vm.prank(bob);
+        _expectNotMinter(bob);
+        token.guardBurn(bob, 50 ether, INITIAL_MINT);
 
-        // ...and the custodian's own entrypoint still works, so the rejection above is about the ROLE GATE
-        // rather than a custodian who has somehow lost the ability to burn at all.
-        vm.prank(custodian);
-        token.custodyBurn(alice, 50 ether);
-        assertEq(token.totalSupply(), INITIAL_MINT - 50 ether);
+        assertEq(token.totalSupply(), INITIAL_MINT, "holding the balance is not authority to destroy it");
+
+        vm.prank(minter);
+        token.guardBurn(bob, 50 ether, INITIAL_MINT);
+        assertEq(token.totalSupply(), INITIAL_MINT - 50 ether, "the identical call lands for the minter");
     }
 
     /// @dev The admin administers MINTER_ROLE but does not hold it, so it reaches `guardBurn` only through a
@@ -189,24 +190,24 @@ contract GuardBurnTest is BaseTest {
 
     /// @dev Two audiences, two events. An indexer reconciling balances reads `Transfer(from, 0x0, amount)`, so
     ///      the guarded path must be indistinguishable from any other burn there; a reconciler tracking the
-    ///      off-chain ledger reads {CustodyBurn}, which is the invariant this contract asks it to rely on.
+    ///      off-chain ledger reads {Burned}, which is the invariant this contract asks it to rely on.
     ///      Both are asserted because a burn visible to only one of them is the failure this event exists to
     ///      prevent.
-    function test_GuardBurn_EmitsCustodyBurnAndTransferToZero() public {
+    function test_GuardBurn_EmitsBurnedAndTransferToZero() public {
         _expectTransferEvent(alice, address(0), 50 ether);
-        _expectCustodyBurnEvent(minter, alice, 50 ether);
+        _expectBurnedEvent(minter, alice, 50 ether);
 
         vm.prank(minter);
         token.guardBurn(alice, 50 ether, INITIAL_MINT);
     }
 
-    /// @dev The `burnedBy` parameter reports the MINTER on this path. Named `custodian` the event would be
-    ///      lying to whoever reads the log — this pins that the value is whoever actually burned.
-    function test_GuardBurn_ReportsTheMinterAsTheBurner() public {
+    /// @dev The `burnedBy` parameter reports WHOEVER burned, not the fixture's own minter — pinned with a
+    ///      second, freshly granted minter so a hardcoded `msg.sender` substitute would go red.
+    function test_GuardBurn_ReportsTheActualBurner() public {
         vm.prank(admin);
         token.grantRole(MINTER_ROLE, carol);
 
-        _expectCustodyBurnEvent(carol, alice, 10 ether);
+        _expectBurnedEvent(carol, alice, 10 ether);
         vm.prank(carol);
         token.guardBurn(alice, 10 ether, INITIAL_MINT);
     }
@@ -253,7 +254,7 @@ contract GuardBurnTest is BaseTest {
 
     // ---------- boundaries ----------
 
-    /// @dev `_burn` is reached DIRECTLY rather than through `custodyBurn`, so ERC20's own balance check
+    /// @dev `_burn` is reached DIRECTLY rather than through `adminBurn`, so ERC20's own balance check
     ///      arrives by a different route and is worth stating once. The guard must not mask it: an
     ///      over-burn is an insufficient-balance fault, not a supply mismatch, and misreporting it would
     ///      send an operator re-reading a supply that was never the problem.
@@ -319,7 +320,7 @@ contract GuardBurnTest is BaseTest {
     // ---------- every path that moves supply ----------
     //
     // The guard reads `totalSupply()` and nothing else, so ANY entrypoint that moves it must void an estimate
-    // read beforehand. `mint` and `guardMint` move it up; `custodyBurn`, `burn` and `burnFrom` move it down.
+    // read beforehand. `mint` and `guardMint` move it up; `adminBurn`, `burn` and `burnFrom` move it down.
     // Which of them the estimate was invalidated by is the property under test, not an accident of ordering.
 
     enum MintPath {
@@ -369,13 +370,14 @@ contract GuardBurnTest is BaseTest {
         _assertGuardTracksSupplyMintedVia(MintPath.Guarded);
     }
 
-    /// @dev And the custodial burn paths move it the other way. A custodian acting between the minter's read
-    ///      and its send is the realistic production interleaving — two independent operators, one supply.
-    function test_GuardBurn_TracksSupplyBurnedByTheCustodian() public {
+    /// @dev And the unguarded burn paths move it the other way. An operator reaching for `adminBurn` between
+    ///      the backend's read and its send is the realistic production interleaving — two independent
+    ///      parties, one supply — and it is precisely the case `adminBurn` itself cannot detect.
+    function test_GuardBurn_TracksSupplyBurnedByAdminBurn() public {
         uint256 estimate = token.totalSupply();
 
-        vm.prank(custodian);
-        token.custodyBurn(alice, 100 ether);
+        vm.prank(minter);
+        token.adminBurn(alice, 100 ether);
 
         vm.prank(minter);
         _expectSupplyMismatch(INITIAL_MINT - 100 ether, estimate);

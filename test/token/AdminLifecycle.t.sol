@@ -9,9 +9,12 @@ import { BaseTest } from "../Base.t.sol";
 ///         story the README states:
 ///
 ///         1. The admin holds NO power over balances. It can reach one by
-///            granting itself CUSTODIAN_ROLE, but that is a separate
-///            transaction which lands on-chain as {RoleGranted} — a standing
-///            power converted into a visible, auditable escalation.
+///            granting itself MINTER_ROLE, but that is a separate transaction
+///            which lands on-chain as {RoleGranted} — a standing power converted
+///            into a visible, auditable escalation. This is the property that
+///            makes OpenZeppelin's "keep DEFAULT_ADMIN_ROLE cold" advice
+///            actionable here, and the reason the operating surface was NOT
+///            folded onto DEFAULT_ADMIN_ROLE when the roles were collapsed.
 ///         2. DEFAULT_ADMIN_ROLE is its own role admin, so losing the last
 ///            holder freezes the role graph permanently.
 ///
@@ -30,10 +33,10 @@ contract AdminLifecycleTest is BaseTest {
         _expectNotMinter(admin);
         token.mint(admin, 1 ether);
 
-        _expectNotCustodian(admin);
-        token.custodyBurn(alice, 1 ether);
+        _expectNotMinter(admin);
+        token.adminBurn(alice, 1 ether);
 
-        _expectNotCustodian(admin);
+        _expectNotMinter(admin);
         token.burnFrom(alice, 1 ether);
 
         vm.stopPrank();
@@ -47,7 +50,7 @@ contract AdminLifecycleTest is BaseTest {
     function test_Admin_CannotMoveAnotherHoldersBalance() public {
         vm.prank(admin);
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, CUSTODIAN_ROLE)
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, MINTER_ROLE)
         );
         token.burnFrom(alice, 1 ether);
 
@@ -59,37 +62,31 @@ contract AdminLifecycleTest is BaseTest {
         assertEq(token.balanceOf(admin), 0);
     }
 
-    /// @dev Escalation IS available — the admin administers CUSTODIAN_ROLE — but
+    /// @dev Escalation IS available — the admin administers MINTER_ROLE — but
     ///      only through a grant that is visible on-chain. That visibility is
     ///      the whole security argument for removing `adminTransfer`, so it is
     ///      asserted rather than left as prose.
-    function test_Admin_ReachesBalancesOnlyViaAVisibleSelfGrant() public {
-        vm.expectEmit(true, true, true, false, address(token));
-        emit IAccessControl.RoleGranted(CUSTODIAN_ROLE, admin, admin);
-
-        vm.prank(admin);
-        token.grantRole(CUSTODIAN_ROLE, admin);
-
-        vm.prank(admin);
-        token.custodyBurn(alice, 100 ether);
-
-        assertEq(token.balanceOf(alice), INITIAL_MINT - 100 ether);
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, admin), "the escalation is durable state, not a transient bypass");
-    }
-
-    /// @dev The same shape on the issuance side.
-    function test_Admin_ReachesMintingOnlyViaAVisibleSelfGrant() public {
+    ///
+    ///      With one operating role, that single grant now opens BOTH
+    ///      directions at once: an admin who appoints itself to reach a burn has
+    ///      simultaneously acquired the power to mint. Asserted here, because it
+    ///      is the sharpest consequence of the collapse and a reviewer reasoning
+    ///      about blast radius will look for it in this file.
+    function test_Admin_ReachesSupplyOnlyViaAVisibleSelfGrant() public {
         vm.expectEmit(true, true, true, false, address(token));
         emit IAccessControl.RoleGranted(MINTER_ROLE, admin, admin);
 
         vm.prank(admin);
         token.grantRole(MINTER_ROLE, admin);
 
-        vm.prank(admin);
+        vm.startPrank(admin);
+        token.adminBurn(alice, 100 ether);
         token.mint(admin, 100 ether);
+        vm.stopPrank();
 
-        assertEq(token.balanceOf(admin), 100 ether);
-        assertEq(token.totalSupply(), INITIAL_MINT + 100 ether);
+        assertEq(token.balanceOf(alice), INITIAL_MINT - 100 ether, "one grant opened the burn side");
+        assertEq(token.balanceOf(admin), 100 ether, "and the mint side, in the same appointment");
+        assertTrue(token.hasRole(MINTER_ROLE, admin), "the escalation is durable state, not a transient bypass");
     }
 
     // ---------- handover: the rotation that does not brick anything ----------
@@ -121,33 +118,32 @@ contract AdminLifecycleTest is BaseTest {
         // ...and the predecessor holds none of it
         vm.startPrank(admin);
         _expectNotAdmin(admin);
-        token.grantRole(CUSTODIAN_ROLE, bob);
+        token.grantRole(MINTER_ROLE, bob);
         _expectNotAdmin(admin);
-        token.revokeRole(CUSTODIAN_ROLE, custodian);
+        token.revokeRole(MINTER_ROLE, minter);
         vm.stopPrank();
 
-        assertFalse(token.hasRole(CUSTODIAN_ROLE, bob), "a stripped admin cannot appoint");
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, custodian), "nor dismantle the role graph");
+        assertFalse(token.hasRole(MINTER_ROLE, bob), "a stripped admin cannot appoint");
+        assertTrue(token.hasRole(MINTER_ROLE, minter), "nor dismantle the role graph");
         assertEq(token.totalSupply(), INITIAL_MINT, "a rotation moves no supply");
     }
 
-    /// @dev A rotation is scoped to DEFAULT_ADMIN_ROLE. Incumbents keep working
-    ///      across it, and the successor may be an address that already holds
-    ///      another role.
+    /// @dev A rotation is scoped to DEFAULT_ADMIN_ROLE. The incumbent minter
+    ///      keeps working across it, and the successor may be an address that
+    ///      already holds the operating role.
     function test_AdminHandover_LeavesOtherRolesIntact() public {
         vm.prank(admin);
-        token.grantRole(DEFAULT_ADMIN_ROLE, custodian); // successor is an existing role holder
-        vm.prank(custodian);
+        token.grantRole(DEFAULT_ADMIN_ROLE, minter); // successor is an existing role holder
+        vm.prank(minter);
         token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
 
-        assertTrue(token.hasRole(CUSTODIAN_ROLE, custodian), "gaining admin must not displace the existing role");
-        assertTrue(token.hasRole(MINTER_ROLE, minter), "an unrelated role holder is untouched");
+        assertTrue(token.hasRole(MINTER_ROLE, minter), "gaining admin must not displace the existing role");
 
-        vm.prank(minter);
+        vm.startPrank(minter);
         token.mint(alice, 50 ether);
-        vm.prank(custodian);
-        token.custodyBurn(alice, 50 ether);
-        assertEq(token.totalSupply(), INITIAL_MINT, "both incumbents still work after the rotation");
+        token.adminBurn(alice, 50 ether);
+        vm.stopPrank();
+        assertEq(token.totalSupply(), INITIAL_MINT, "the incumbent still works after the rotation");
     }
 
     /// @dev Rotation is not a one-shot: nothing about the first handover
@@ -207,8 +203,8 @@ contract AdminLifecycleTest is BaseTest {
 
     // ---------- losing the last admin ----------
 
-    /// @dev Pins the README warning. The role graph freezes: no new minter, no
-    ///      new custodian, ever.
+    /// @dev Pins the README warning. The role graph freezes: no new minter,
+    ///      ever.
     function test_RenouncedLastAdmin_FreezesTheRoleGraph() public {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
@@ -218,11 +214,11 @@ contract AdminLifecycleTest is BaseTest {
         _expectNotAdmin(admin);
         token.grantRole(MINTER_ROLE, carol);
         _expectNotAdmin(admin);
-        token.grantRole(CUSTODIAN_ROLE, carol);
+        token.grantRole(DEFAULT_ADMIN_ROLE, carol);
         vm.stopPrank();
 
         assertFalse(token.hasRole(MINTER_ROLE, carol));
-        assertFalse(token.hasRole(CUSTODIAN_ROLE, carol));
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, carol));
     }
 
     /// @dev DEFAULT_ADMIN_ROLE is its own role admin, so re-granting it requires
@@ -232,7 +228,7 @@ contract AdminLifecycleTest is BaseTest {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
-        address[5] memory parties = [admin, alice, minter, custodian, address(this)];
+        address[5] memory parties = [admin, alice, minter, bob, address(this)];
         for (uint256 i = 0; i < parties.length; i++) {
             vm.prank(parties[i]);
             _expectNotAdmin(parties[i]);
@@ -262,10 +258,10 @@ contract AdminLifecycleTest is BaseTest {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
-        vm.prank(minter);
+        vm.startPrank(minter);
         token.mint(carol, 10 ether);
-        vm.prank(custodian);
-        token.custodyBurn(carol, 10 ether);
+        token.adminBurn(carol, 10 ether);
+        vm.stopPrank();
         assertEq(token.totalSupply(), INITIAL_MINT, "incumbents are unaffected by the freeze");
 
         vm.prank(alice);
@@ -273,72 +269,41 @@ contract AdminLifecycleTest is BaseTest {
         assertEq(token.balanceOf(bob), 100 ether, "transfers need no privilege, so they survive the freeze");
     }
 
-    /// @dev Losing the last admin AND the custodian closes the CUSTODIAL exit —
-    ///      but not redemption itself, because `guardBurn` is MINTER_ROLE. The
-    ///      minter is what is left, and this pins that rather than leaving the
-    ///      surviving path to be discovered during an incident.
-    function test_LosingTheLastAdminAndCustodian_LeavesOnlyTheMintersGuardedBurn() public {
-        vm.prank(admin);
-        token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
-        vm.prank(custodian);
-        token.renounceRole(CUSTODIAN_ROLE, custodian);
-
-        // the incumbent custodian is gone
-        vm.prank(custodian);
-        _expectNotCustodian(custodian);
-        token.custodyBurn(alice, 1 ether);
-
-        // the holder cannot let themselves out
-        vm.prank(alice);
-        _expectNotCustodian(alice);
-        token.burn(INITIAL_MINT);
-
-        // and nobody can appoint a replacement
-        vm.prank(admin);
-        _expectNotAdmin(admin);
-        token.grantRole(CUSTODIAN_ROLE, carol);
-
-        // ...yet the minter still holds a burn path, so supply is not frozen
-        vm.prank(minter);
-        token.guardBurn(alice, 1 ether, INITIAL_MINT);
-        assertEq(token.totalSupply(), INITIAL_MINT - 1 ether, "guardBurn survives the loss of the custodian");
-
-        // ...and the balance is still perfectly mobile
-        vm.prank(alice);
-        token.transfer(bob, 100 ether);
-        assertEq(token.balanceOf(bob), 100 ether, "value still moves");
-    }
-
     /// @dev The end state the README's "keep at least two holders of each role"
-    ///      rule exists to prevent. It now takes THREE losses, not two: with the
-    ///      admin, the custodian and the minter all gone, balances still move
-    ///      freely but can never be redeemed by anyone, ever.
-    function test_LosingAdminCustodianAndMinter_MakesRedemptionImpossible() public {
-        vm.prank(custodian);
-        token.renounceRole(CUSTODIAN_ROLE, custodian);
+    ///      rule exists to prevent, and it now takes only TWO losses rather than
+    ///      three: one operating role means the minter is the sole redemption
+    ///      path, so admin + minter gone is terminal. Balances still move freely
+    ///      but can never be redeemed by anyone, ever.
+    ///
+    ///      The narrower loss is worth stating too: losing ONLY the minter is
+    ///      recoverable, because the admin can appoint a replacement — which is
+    ///      what `test_MinterLossAloneIsRecoverableWhileAnAdminSurvives` below
+    ///      pins. It is the surviving admin, not the surviving minter, that
+    ///      makes the difference.
+    function test_LosingTheLastAdminAndMinter_MakesRedemptionImpossible() public {
         vm.prank(minter);
         token.renounceRole(MINTER_ROLE, minter);
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
-        vm.prank(custodian);
-        _expectNotCustodian(custodian);
-        token.custodyBurn(alice, 1 ether);
-
-        vm.prank(minter);
+        // every burn path is closed, for the incumbent and for the holder alike
+        vm.startPrank(minter);
+        _expectNotMinter(minter);
+        token.adminBurn(alice, 1 ether);
         _expectNotMinter(minter);
         token.guardBurn(alice, 1 ether, INITIAL_MINT);
+        vm.stopPrank();
 
         vm.prank(alice);
-        _expectNotCustodian(alice);
+        _expectNotMinter(alice);
         token.burn(INITIAL_MINT);
 
-        // and nobody can appoint a replacement for either role
+        // and nobody can appoint a replacement
         vm.startPrank(admin);
         _expectNotAdmin(admin);
-        token.grantRole(CUSTODIAN_ROLE, carol);
-        _expectNotAdmin(admin);
         token.grantRole(MINTER_ROLE, carol);
+        _expectNotAdmin(admin);
+        token.grantRole(DEFAULT_ADMIN_ROLE, carol);
         vm.stopPrank();
 
         vm.prank(alice);
@@ -346,5 +311,28 @@ contract AdminLifecycleTest is BaseTest {
 
         assertEq(token.balanceOf(bob), INITIAL_MINT, "value still moves");
         assertEq(token.totalSupply(), INITIAL_MINT, "but no supply can ever be destroyed again");
+    }
+
+    /// @dev The recoverable half of the same story, so the test above is not
+    ///      read as "losing the minter is fatal". A surviving admin can appoint
+    ///      a new one, and the new one reaches the full operating surface
+    ///      immediately.
+    function test_MinterLossAloneIsRecoverableWhileAnAdminSurvives() public {
+        vm.prank(minter);
+        token.renounceRole(MINTER_ROLE, minter);
+
+        vm.prank(minter);
+        _expectNotMinter(minter);
+        token.adminBurn(alice, 1 ether);
+
+        vm.prank(admin);
+        token.grantRole(MINTER_ROLE, carol);
+
+        vm.startPrank(carol);
+        token.adminBurn(alice, 1 ether);
+        token.mint(alice, 1 ether);
+        vm.stopPrank();
+
+        assertEq(token.totalSupply(), INITIAL_MINT, "the replacement holds the whole operating surface");
     }
 }

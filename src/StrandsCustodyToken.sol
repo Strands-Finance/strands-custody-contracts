@@ -7,13 +7,23 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
 import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 /// @title  Strands Custody Token
-/// @notice ERC20 token where a balance is a claim against an off-chain ledger, so destroying supply is a
-///         privileged act. The invariant a reconciler may rely on is that EVERY burn emits {CustodyBurn} —
-///         not that every burn is a custodian. `custodyBurn`, `burn` and `burnFrom` are CUSTODIAN_ROLE; the
-///         supply-checked `guardBurn` is MINTER_ROLE (see its docs for why). A holder can do neither, and
-///         cannot delegate that power via an ERC20 allowance. Transfers are ordinary, unrestricted ERC20.
+/// @notice ERC20 token where a balance is a claim against an off-chain ledger, so changing how many tokens
+///         exist is a privileged act. ONE operating role owns both directions: `mint` and `guardMint` create
+///         supply, `adminBurn`, `guardBurn`, `burn` and `burnFrom` destroy it, and all six are MINTER_ROLE.
+///         A reconciler therefore gets two invariants rather than one — every burn emits {Burned}, AND every
+///         burn is a MINTER_ROLE holder. A holder can do none of it, and cannot delegate the power via an
+///         ERC20 allowance. Transfers are ordinary, unrestricted ERC20.
 ///
-/// @dev    Deployment is TWO steps: `constructor` then `initialize`. The constructor seats the deployer as
+/// @dev    Two roles, following OpenZeppelin's own division: DEFAULT_ADMIN_ROLE is GOVERNANCE (it administers
+///         the role graph, is its own admin, and carries {AccessControl}'s "extra precautions" warning — keep
+///         it cold), while MINTER_ROLE is the single hot OPERATING capability. The admin holds no operating
+///         power directly: to mint or burn it must first `grantRole(MINTER_ROLE, itself)`, which announces
+///         itself on-chain as `RoleGranted`. That visible step is the point.
+///
+///         The operational consequence of one operating role: `revokeRole(MINTER_ROLE, ...)` is the single
+///         lever that stops minting AND burning. There is no burn-only revoke.
+///
+///         Deployment is TWO steps: `constructor` then `initialize`. The constructor seats the deployer as
 ///         DEFAULT_ADMIN_ROLE and grants no operating role, so a deployed-but-uninitialized token is inert
 ///         (nothing mints, nothing burns) and recoverable (the deployer can still initialize it).
 ///
@@ -22,7 +32,6 @@ import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable
 ///         token is NOT proxy-safe: `_decimals` is immutable and ERC20's name/symbol are written by the
 ///         constructor, so behind a proxy all three would read empty.
 contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
-    bytes32 public constant CUSTODIAN_ROLE = keccak256("CUSTODIAN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     /// @notice Token decimals, fixed at deploy time to match the custodied
@@ -30,11 +39,11 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
     uint8 private immutable _decimals;
 
     /// @notice Emitted on every burn, whichever entrypoint destroyed the supply.
-    /// @dev    A reconciler tracking the off-chain ledger can subscribe to this alone: `custodyBurn`,
+    /// @dev    A reconciler tracking the off-chain ledger can subscribe to this alone: `adminBurn`,
     ///         `guardBurn`, `burn` and `burnFrom` all emit it, so no destroyed supply is invisible here.
-    ///         `burnedBy` is whoever called — a custodian on three of those paths and a minter on
-    ///         `guardBurn`. `burnedBy == from` means the caller burned their own balance via `burn`.
-    event CustodyBurn(address indexed burnedBy, address indexed from, uint256 amount);
+    ///         `burnedBy` is whoever called — necessarily a MINTER_ROLE holder, on every path.
+    ///         `burnedBy == from` means the caller burned their own balance via `burn`.
+    event Burned(address indexed burnedBy, address indexed from, uint256 amount);
 
     /// @notice Thrown when a guarded call's supply estimate does not match the actual total supply.
     /// @param actualSupply    The chain's `totalSupply()` at execution time.
@@ -49,7 +58,8 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
     /// @dev   The DEPLOYER receives DEFAULT_ADMIN_ROLE, and is therefore the only address that can call
     ///        {initialize}. That is what closes the front-running window a bare `initializer`-only guard
     ///        would leave open on a CREATE-deployed contract: between the deploy landing and the operator's
-    ///        second transaction, anyone could otherwise seat themselves as minter and custodian.
+    ///        second transaction, anyone could otherwise seat themselves as the token's minter — which is the
+    ///        whole of its mint AND burn authority.
     constructor(uint8 decimals_, string memory name_, string memory symbol_) ERC20(name_, symbol_) {
         // Empty metadata is UNRECOVERABLE: there is no setter, so the token would be permanently anonymous and the
         // only remedy is redeploy-and-re-mint. Reverting the deploy is the cheap end of that trade.
@@ -59,10 +69,9 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
-    /// @notice Seat every operating role in one call. Callable exactly once, by the deployer only.
-    /// @param admin     Receives DEFAULT_ADMIN_ROLE.
-    /// @param minter    Receives MINTER_ROLE: `mint`, `guardMint`, `guardBurn`.
-    /// @param custodian Receives CUSTODIAN_ROLE: `custodyBurn`, `burn`, `burnFrom`.
+    /// @notice Seat both roles in one call. Callable exactly once, by the deployer only.
+    /// @param admin  Receives DEFAULT_ADMIN_ROLE: the role graph, and nothing operational.
+    /// @param minter Receives MINTER_ROLE: `mint`, `guardMint`, `adminBurn`, `guardBurn`, `burn`, `burnFrom`.
     /// @dev   Both guards are load-bearing and neither is sufficient alone: `onlyRole(DEFAULT_ADMIN_ROLE)` is
     ///        what makes this un-front-runnable, and `initializer` is what makes it un-repeatable. Without the
     ///        role check a stranger seats themselves first; without `initializer` an admin could silently
@@ -70,23 +79,17 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
     ///
     ///        The deployer's own admin role is revoked unless it IS the admin, so the role graph afterwards is
     ///        exactly what the arguments say — no residual deployer privilege for an auditor to chase. When
-    ///        `admin == msg.sender` (the backend's shape: one mint-authority EOA is deployer, admin, minter and
-    ///        custodian) that revoke is skipped rather than performed-and-undone.
+    ///        `admin == msg.sender` (the backend's shape: one mint-authority EOA is deployer, admin and
+    ///        minter) that revoke is skipped rather than performed-and-undone.
     ///
-    ///        NOT IDEMPOTENT. A second call reverts with `InvalidInitialization()`, unlike the two `grantRole`
+    ///        NOT IDEMPOTENT. A second call reverts with `InvalidInitialization()`, unlike the `grantRole`
     ///        sends this replaces. A caller with a retry path must read `hasRole` first rather than re-calling.
-    function initialize(address admin, address minter, address custodian)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        initializer
-    {
+    function initialize(address admin, address minter) external onlyRole(DEFAULT_ADMIN_ROLE) initializer {
         require(admin != address(0), "admin=0");
         require(minter != address(0), "minter=0");
-        require(custodian != address(0), "custodian=0");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MINTER_ROLE, minter);
-        _grantRole(CUSTODIAN_ROLE, custodian);
 
         if (msg.sender != admin) _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
@@ -118,47 +121,44 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
     ///         off-chain ledger never authorised. Passing the read back in makes the assumption enforceable:
     ///         a mismatch reverts instead of silently desyncing. `estimatedSupply` is the PRE-burn supply.
     ///
-    ///         MINTER_ROLE, not CUSTODIAN_ROLE. This is the ONE burn path not gated on the custodian, and it
-    ///         is why this contract's invariant is "every burn emits {CustodyBurn}" rather than "every burn is
-    ///         a custodian" — a reconciler subscribed to that event still sees every destroyed unit, and the
-    ///         `burnedBy` parameter reports a minter here. Splitting MINTER_ROLE and CUSTODIAN_ROLE across
-    ///         different keys therefore hands the MINTER side the power to destroy supply; today the backend's
-    ///         single mint-authority EOA holds both.
-    ///
-    ///         `_burn` is called directly rather than through `custodyBurn`: an external self-call would make
+    ///         `_burn` is called directly rather than through `adminBurn`: an external self-call would make
     ///         `msg.sender` this contract and fail the role check.
     function guardBurn(address from, uint256 amount, uint256 estimatedSupply) external onlyRole(MINTER_ROLE) {
         uint256 actual = totalSupply();
         if (actual != estimatedSupply) revert SupplyMismatch(actual, estimatedSupply);
         _burn(from, amount);
-        emit CustodyBurn(msg.sender, from, amount);
+        emit Burned(msg.sender, from, amount);
     }
 
     /// @notice Burn `amount` tokens from `from` without consuming allowance.
-    ///         Restricted to CUSTODIAN_ROLE.
-    /// @dev    Reverts (via `_burn`) if `from` has insufficient balance.
-    function custodyBurn(address from, uint256 amount) external onlyRole(CUSTODIAN_ROLE) {
+    ///         Restricted to MINTER_ROLE.
+    /// @dev    The UNGUARDED counterpart to `guardBurn` — it takes no supply
+    ///         estimate and so cannot refuse a burn decided against a stale
+    ///         read. The backend never sends it; it is the operator's manual
+    ///         escape hatch, which is what the `admin` in the name refers to.
+    ///         Reverts (via `_burn`) if `from` has insufficient balance.
+    function adminBurn(address from, uint256 amount) external onlyRole(MINTER_ROLE) {
         _burn(from, amount);
-        emit CustodyBurn(msg.sender, from, amount);
+        emit Burned(msg.sender, from, amount);
     }
 
     /// @notice Burn `amount` of the caller's own balance. Restricted to
-    ///         CUSTODIAN_ROLE — a holder who could burn unilaterally would
+    ///         MINTER_ROLE — a holder who could burn unilaterally would
     ///         desync the off-chain ledger the balance is a claim against.
-    function burn(uint256 amount) public override onlyRole(CUSTODIAN_ROLE) {
+    function burn(uint256 amount) public override onlyRole(MINTER_ROLE) {
         super.burn(amount);
-        emit CustodyBurn(msg.sender, msg.sender, amount);
+        emit Burned(msg.sender, msg.sender, amount);
     }
 
     /// @notice Burn `amount` from `from`, spending the caller's allowance.
-    ///         Restricted to CUSTODIAN_ROLE. Strictly weaker than
-    ///         `custodyBurn`, which needs no allowance; retained so the
-    ///         inherited ERC20Burnable surface stays coherent rather than
-    ///         silently reachable.
+    ///         Restricted to MINTER_ROLE. Strictly weaker than `adminBurn`,
+    ///         which needs no allowance; retained so the inherited
+    ///         ERC20Burnable surface stays coherent rather than silently
+    ///         reachable.
     /// @dev    The role check runs BEFORE `super`, so a rejected call never
     ///         reaches `_spendAllowance` and leaves the allowance intact.
-    function burnFrom(address from, uint256 amount) public override onlyRole(CUSTODIAN_ROLE) {
+    function burnFrom(address from, uint256 amount) public override onlyRole(MINTER_ROLE) {
         super.burnFrom(from, amount);
-        emit CustodyBurn(msg.sender, from, amount);
+        emit Burned(msg.sender, from, amount);
     }
 }

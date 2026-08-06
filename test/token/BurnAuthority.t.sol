@@ -3,49 +3,51 @@ pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Destruction of supply is PRIVILEGED, and the privilege is split. The
-///         unguarded burn surface — `custodyBurn` and the inherited `burn` /
-///         `burnFrom` — is CUSTODIAN_ROLE-only, and that is what this suite
-///         owns. The supply-checked `guardBurn` is the documented exception: it
-///         is MINTER_ROLE, and `GuardBurn.t.sol` owns it.
+/// @notice Destruction of supply is PRIVILEGED, and the privilege is NOT split:
+///         all four burn entrypoints — `adminBurn`, `guardBurn` and the
+///         inherited `burn` / `burnFrom` — are MINTER_ROLE. That is what this
+///         suite owns. `AdminBurn.t.sol` and `GuardBurn.t.sol` own the mechanics
+///         of the two Strands-specific paths; here the subject is who may reach
+///         any of them.
 ///
-///         What holds across BOTH is what a holder can do, which is nothing.
-///         They have exactly one capability — moving their balance. They cannot
-///         destroy it, and they cannot delegate that power to anyone else via an
-///         ERC20 allowance.
+///         What holds for every holder is that they can do nothing. They have
+///         exactly one capability — moving their balance. They cannot destroy
+///         it, and they cannot delegate that power to anyone else via an ERC20
+///         allowance.
 ///
 /// @dev    A balance here is a claim against an off-chain ledger. A holder who
 ///         can burn unilaterally desyncs that ledger, which is the whole reason
-///         `custodyBurn` exists — and the reason the `burn` / `burnFrom` that
+///         `adminBurn` exists — and the reason the `burn` / `burnFrom` that
 ///         OZ's `ERC20Burnable` hands every holder had to be gated rather than
 ///         left silently reachable.
 ///
-///         The role split means "revoke the custodian" is NOT the same as "stop
-///         every burn". `test_Minter_CannotBurnUnguardedButMayGuardBurn` below
-///         is where that is made explicit rather than left to be discovered.
+///         One operating role means `revokeRole(MINTER_ROLE, ...)` is the single
+///         lever that stops minting AND burning; there is no burn-only revoke.
+///         `Roles.t.sol:test_RevokedMinter_LosesEveryBurnAndMintPathImmediately`
+///         is where that is asserted rather than left to be discovered.
 ///
 ///         The positive controls at the bottom are what keeps the negative
-///         cases honest: they pin that custody still works, so the gating
-///         cannot be satisfied by breaking burning outright.
+///         cases honest: they pin that burning still works, so the gating
+///         cannot be satisfied by breaking it outright.
 contract BurnAuthorityTest is BaseTest {
     function test_Holder_CannotBurnOwnBalance() public {
         vm.prank(alice);
-        _expectNotCustodian(alice);
+        _expectNotMinter(alice);
         token.burn(100 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT, "holder balance must be untouched");
-        assertEq(token.totalSupply(), INITIAL_MINT, "supply must not move without the custodian");
+        assertEq(token.totalSupply(), INITIAL_MINT, "supply must not move without the minter");
     }
 
     /// @dev An allowance must not launder the burn. Ungated, `approve` +
-    ///      `burnFrom` destroys a holder's balance with no custodian
-    ///      involvement, so any address a user approves could wipe them out.
+    ///      `burnFrom` destroys a holder's balance with no privileged party
+    ///      involved, so any address a user approves could wipe them out.
     function test_Holder_CannotBurnFromEvenWithAllowance() public {
         vm.prank(alice);
         token.approve(bob, 200 ether);
 
         vm.prank(bob);
-        _expectNotCustodian(bob);
+        _expectNotMinter(bob);
         token.burnFrom(alice, 200 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT, "an allowance must not destroy value");
@@ -58,9 +60,9 @@ contract BurnAuthorityTest is BaseTest {
     ///      gated, but for the wrong reason — catching the role rejection while
     ///      claiming to prove an allowance is required. Pinning the exact error
     ///      keeps the two causes distinguishable.
-    function test_BurnFrom_RejectsNonCustodianRegardlessOfAllowance() public {
+    function test_BurnFrom_RejectsNonMinterRegardlessOfAllowance() public {
         vm.prank(bob);
-        _expectNotCustodian(bob);
+        _expectNotMinter(bob);
         token.burnFrom(alice, 1);
 
         assertEq(token.totalSupply(), INITIAL_MINT);
@@ -73,65 +75,65 @@ contract BurnAuthorityTest is BaseTest {
         token.transfer(bob, 300 ether);
 
         vm.prank(bob);
-        _expectNotCustodian(bob);
+        _expectNotMinter(bob);
         token.burn(300 ether);
 
         assertEq(token.balanceOf(bob), 300 ether, "recipient balance must be untouched");
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
-    /// @dev Holding some other role is not a shortcut into the UNGUARDED burn
-    ///      surface. The admin is the sharpest case: it is the role admin for
-    ///      CUSTODIAN_ROLE, but until it grants itself that role it cannot
-    ///      destroy a balance — and the grant is visible on-chain as
-    ///      `RoleGranted`.
-    function test_MinterAndAdmin_CannotBurnUnguarded() public {
-        // fund both, so a failure cannot be explained by an empty balance
-        vm.startPrank(minter);
-        token.mint(minter, 100 ether);
+    /// @dev The admin is the sharpest case, and the one property the single-role
+    ///      collapse was chosen to preserve. DEFAULT_ADMIN_ROLE is the role admin
+    ///      for MINTER_ROLE, so it CAN reach every burn path — but only by first
+    ///      granting itself the role, and that grant is visible on-chain as
+    ///      `RoleGranted`. Until it does, it is refused like any other holder.
+    function test_Admin_ReachesBurningOnlyViaAVisibleSelfGrant() public {
+        vm.prank(minter);
         token.mint(admin, 100 ether);
+
+        // Before the grant: refused on all four paths.
+        vm.startPrank(admin);
+        _expectNotMinter(admin);
+        token.burn(10 ether);
+        _expectNotMinter(admin);
+        token.burnFrom(alice, 10 ether);
+        _expectNotMinter(admin);
+        token.adminBurn(alice, 10 ether);
+        _expectNotMinter(admin);
+        token.guardBurn(alice, 10 ether, INITIAL_MINT + 100 ether);
         vm.stopPrank();
 
-        vm.prank(minter);
-        _expectNotCustodian(minter);
-        token.burn(100 ether);
+        assertEq(token.totalSupply(), INITIAL_MINT + 100 ether, "the admin holds no operating power of its own");
+
+        // The grant announces itself, and only then does the burn land.
+        vm.prank(admin);
+        token.grantRole(MINTER_ROLE, admin);
 
         vm.prank(admin);
-        _expectNotCustodian(admin);
-        token.burn(100 ether);
+        token.burn(10 ether);
 
-        assertEq(token.balanceOf(minter), 100 ether, "minter must not be exempt");
-        assertEq(token.balanceOf(admin), 100 ether, "admin must not be exempt");
-        assertEq(token.totalSupply(), INITIAL_MINT + 200 ether, "the unguarded burn surface is the custodian's alone");
+        assertEq(token.totalSupply(), INITIAL_MINT + 90 ether, "the escalation works, but never silently");
     }
 
-    /// @dev The exception, stated where someone reasoning about "who can destroy
-    ///      supply" will actually look. The minter is refused by all three
-    ///      custodial entrypoints and accepted by `guardBurn` — so revoking
-    ///      CUSTODIAN_ROLE does not stop supply being destroyed, and an operator
-    ///      responding to an incident has to revoke MINTER_ROLE as well.
-    function test_Minter_CannotBurnUnguardedButMayGuardBurn() public {
+    /// @dev The whole burn surface, from the one role that owns it. The
+    ///      counterpart to `test_Admin_ReachesBurningOnlyViaAVisibleSelfGrant`:
+    ///      together they say the minter reaches everything and the admin
+    ///      reaches nothing without asking first.
+    function test_Minter_ReachesEveryBurnPath() public {
         vm.prank(alice);
         token.approve(minter, 100 ether);
         vm.prank(minter);
         token.mint(minter, 100 ether);
 
         vm.startPrank(minter);
-        _expectNotCustodian(minter);
         token.burn(10 ether);
-        _expectNotCustodian(minter);
         token.burnFrom(alice, 10 ether);
-        _expectNotCustodian(minter);
-        token.custodyBurn(alice, 10 ether);
+        token.adminBurn(alice, 10 ether);
+        token.guardBurn(alice, 10 ether, INITIAL_MINT + 70 ether);
         vm.stopPrank();
 
-        assertEq(token.totalSupply(), INITIAL_MINT + 100 ether, "all three custodial paths refuse the minter");
-
-        vm.prank(minter);
-        token.guardBurn(alice, 10 ether, INITIAL_MINT + 100 ether);
-
-        assertEq(token.totalSupply(), INITIAL_MINT + 90 ether, "but the guarded path is the minter's");
-        assertEq(token.allowance(alice, minter), 100 ether, "and it spends no allowance getting there");
+        assertEq(token.totalSupply(), INITIAL_MINT + 60 ether, "100 minted, 40 destroyed across four paths");
+        assertEq(token.allowance(alice, minter), 90 ether, "only burnFrom spends allowance; the other three do not");
     }
 
     /// @dev Every rejected path must unwind completely — no partial burn, no
@@ -143,11 +145,11 @@ contract BurnAuthorityTest is BaseTest {
         token.approve(carol, type(uint256).max);
 
         vm.prank(alice);
-        _expectNotCustodian(alice);
+        _expectNotMinter(alice);
         token.burn(1 ether);
 
         vm.prank(carol);
-        _expectNotCustodian(carol);
+        _expectNotMinter(carol);
         token.burnFrom(alice, 1 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT);
@@ -162,65 +164,64 @@ contract BurnAuthorityTest is BaseTest {
         uint256 value = bound(uint256(amount), 1, token.balanceOf(alice));
 
         vm.prank(alice);
-        _expectNotCustodian(alice);
+        _expectNotMinter(alice);
         token.burn(value);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "no amount is small enough to slip through");
     }
 
-    // ---------- positive controls: custody must keep working ----------
+    // ---------- positive controls: burning must keep working ----------
 
-    function test_Custodian_CanBurn() public {
+    function test_Minter_CanBurn() public {
         vm.prank(minter);
-        token.mint(custodian, 100 ether);
+        token.mint(minter, 100 ether);
 
-        vm.prank(custodian);
+        vm.prank(minter);
         token.burn(40 ether);
 
-        assertEq(token.balanceOf(custodian), 60 ether);
+        assertEq(token.balanceOf(minter), 60 ether);
         assertEq(token.totalSupply(), INITIAL_MINT + 60 ether);
     }
 
-    function test_Custodian_CanBurnFromWithAllowance() public {
+    function test_Minter_CanBurnFromWithAllowance() public {
         vm.prank(alice);
-        token.approve(custodian, 200 ether);
+        token.approve(minter, 200 ether);
 
-        vm.prank(custodian);
+        vm.prank(minter);
         token.burnFrom(alice, 200 ether);
 
         assertEq(token.balanceOf(alice), 800 ether);
-        assertEq(token.allowance(alice, custodian), 0, "burnFrom still spends the allowance");
+        assertEq(token.allowance(alice, minter), 0, "burnFrom still spends the allowance");
         assertEq(token.totalSupply(), 800 ether);
     }
 
-    // ---------- observability: one event covers all three paths ----------
+    // ---------- observability: one event covers all four paths ----------
 
-    /// @dev Four burn entrypoints across two roles are only safe if a reconciler
-    ///      can see all of them from ONE subscription. This is the invariant the
-    ///      contract asks it to rely on — "every burn emits {CustodyBurn}" —
-    ///      and `guardBurn` is included precisely because it is the path whose
-    ///      caller is not a custodian: were it omitted, the one burn that does
-    ///      not look like the others would also be the one that is invisible.
-    function test_EveryBurnPath_EmitsCustodyBurn() public {
+    /// @dev Four burn entrypoints are only safe if a reconciler can see all of
+    ///      them from ONE subscription. This is the invariant the contract asks
+    ///      it to rely on — "every burn emits {Burned}" — and it is asserted
+    ///      path by path rather than argued, because an entrypoint that forgot
+    ///      the event would still pass every balance and supply assertion in
+    ///      this file.
+    function test_EveryBurnPath_EmitsBurned() public {
         vm.prank(minter);
-        token.mint(custodian, 100 ether);
+        token.mint(minter, 100 ether);
         vm.prank(alice);
-        token.approve(custodian, 10 ether);
+        token.approve(minter, 10 ether);
 
-        _expectCustodyBurnEvent(custodian, custodian, 40 ether);
-        vm.prank(custodian);
+        _expectBurnedEvent(minter, minter, 40 ether);
+        vm.prank(minter);
         token.burn(40 ether);
 
-        _expectCustodyBurnEvent(custodian, alice, 10 ether);
-        vm.prank(custodian);
+        _expectBurnedEvent(minter, alice, 10 ether);
+        vm.prank(minter);
         token.burnFrom(alice, 10 ether);
 
-        _expectCustodyBurnEvent(custodian, alice, 5 ether);
-        vm.prank(custodian);
-        token.custodyBurn(alice, 5 ether);
+        _expectBurnedEvent(minter, alice, 5 ether);
+        vm.prank(minter);
+        token.adminBurn(alice, 5 ether);
 
-        // The fourth path, and the only one whose `burnedBy` is not the custodian.
-        _expectCustodyBurnEvent(minter, alice, 5 ether);
+        _expectBurnedEvent(minter, alice, 5 ether);
         vm.prank(minter);
         token.guardBurn(alice, 5 ether, INITIAL_MINT + 45 ether);
 

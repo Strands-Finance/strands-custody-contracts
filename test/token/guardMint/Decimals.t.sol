@@ -66,9 +66,9 @@ contract GuardMintDecimalsTest is GuardMintBase {
         }
 
         // 5. The guard tracks whatever moved supply, not just mints: after a burn the estimate must be the NEW
-        //    raw supply. Pairs the guard with the custody burn path at every magnitude.
-        vm.prank(custodian);
-        t.custodyBurn(bob, amount);
+        //    raw supply. Pairs the guard with the unguarded burn path at every magnitude.
+        vm.prank(minter);
+        t.adminBurn(bob, amount);
         assertEq(t.totalSupply(), amount, "the burn removes exactly the raw amount");
 
         vm.prank(minter);

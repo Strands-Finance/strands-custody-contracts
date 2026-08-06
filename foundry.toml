@@ -9,6 +9,10 @@ optimizer = true
 optimizer_runs = 200
 via_ir = false
 fuzz = { runs = 256 }
+# `fail_on_revert = false` is required by SupplyInvariant.t.sol, not merely tolerated: it drives the whole token
+# ABI from unprivileged senders, so nearly every call is SUPPOSED to be refused. With reverts fatal the run would
+# stop at the first role rejection and prove nothing.
+invariant = { runs = 256, depth = 64, fail_on_revert = false }
 gas_reports = ["StrandsCustodyToken"]
 
 [lint]
