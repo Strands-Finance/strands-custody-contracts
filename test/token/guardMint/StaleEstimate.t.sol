@@ -6,14 +6,14 @@ import { GuardMintBase } from "./GuardMintBase.t.sol";
 /// @notice Anything that moves supply between the caller's read and the call voids the estimate — and the
 ///         corrected estimate then works.
 /// @dev    This is the incident `guardMint` exists for, and it has more than one shape. A burn can shrink the
-///         supply through any of three entrypoints (`custodyBurn`, `burn`, `burnFrom`), and a second minter can
-///         grow it. The guard reads `totalSupply()` and nothing else, so all four are interchangeable here —
-///         which is the property under test, not an accident of how these are written. Each case asserts BOTH
-///         halves: the stale read is refused, and the fresh one goes through. A guard that refused everything
-///         after a burn would pass a revert-only test while bricking the mint path.
+///         supply through any of three unguarded entrypoints (`adminBurn`, `burn`, `burnFrom`), and a second
+///         minter can grow it. The guard reads `totalSupply()` and nothing else, so all four are interchangeable
+///         here — which is the property under test, not an accident of how these are written. Each case asserts
+///         BOTH halves: the stale read is refused, and the fresh one goes through. A guard that refused
+///         everything after a burn would pass a revert-only test while bricking the mint path.
 contract GuardMintStaleEstimateTest is GuardMintBase {
     enum BurnPath {
-        Custody,
+        Admin,
         Self,
         From
     }
@@ -21,18 +21,18 @@ contract GuardMintStaleEstimateTest is GuardMintBase {
     /// @dev Destroy `amount` of `from`'s balance through `path`, doing whatever setup that path requires.
     ///      `BurnAuthority.t.sol` owns which caller may use which entrypoint; here they differ only in route.
     function _burnVia(BurnPath path, address from, uint256 amount) private {
-        if (path == BurnPath.Custody) {
-            vm.prank(custodian);
-            token.custodyBurn(from, amount);
+        if (path == BurnPath.Admin) {
+            vm.prank(minter);
+            token.adminBurn(from, amount);
         } else if (path == BurnPath.Self) {
-            vm.prank(from); // `burn` destroys the CALLER's balance, so it has to be the custodian's first
-            token.transfer(custodian, amount);
-            vm.prank(custodian);
+            vm.prank(from); // `burn` destroys the CALLER's balance, so it has to be the minter's first
+            token.transfer(minter, amount);
+            vm.prank(minter);
             token.burn(amount);
         } else {
             vm.prank(from);
-            token.approve(custodian, amount);
-            vm.prank(custodian);
+            token.approve(minter, amount);
+            vm.prank(minter);
             token.burnFrom(from, amount);
         }
     }
@@ -61,16 +61,16 @@ contract GuardMintStaleEstimateTest is GuardMintBase {
     function test_GuardMint_RevertsWhenSupplyMovedAfterTheRead() public {
         uint256 estimate = token.totalSupply();
 
-        vm.prank(custodian);
-        token.custodyBurn(alice, 1 ether);
+        vm.prank(minter);
+        token.adminBurn(alice, 1 ether);
 
         vm.prank(minter);
         _expectSupplyMismatch(INITIAL_MINT - 1 ether, estimate);
         token.guardMint(bob, 50 ether, estimate);
     }
 
-    function test_GuardMint_TracksSupplyBurnedVia_CustodyBurn() public {
-        _assertGuardTracksSupplyBurnedVia(BurnPath.Custody);
+    function test_GuardMint_TracksSupplyBurnedVia_AdminBurn() public {
+        _assertGuardTracksSupplyBurnedVia(BurnPath.Admin);
     }
 
     function test_GuardMint_TracksSupplyBurnedVia_Burn() public {

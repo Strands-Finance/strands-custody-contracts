@@ -3,18 +3,18 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
+import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
 
 /// @title  Shared test fixture
-/// @notice Deploys the token, wires MINTER_ROLE / CUSTODIAN_ROLE and funds
-///         `alice` with `INITIAL_MINT`. Every suite under `test/` extends this
-///         so the starting state is identical across files.
+/// @notice Deploys the token, seats DEFAULT_ADMIN_ROLE / MINTER_ROLE through
+///         `initialize` and funds `alice` with `INITIAL_MINT`. Every suite under
+///         `test/` extends this so the starting state is identical across files.
 abstract contract BaseTest is Test {
     StrandsCustodyToken internal token;
 
     address internal admin = makeAddr("admin");
     address internal minter = makeAddr("minter");
-    address internal custodian = makeAddr("custodian");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
@@ -37,25 +37,42 @@ abstract contract BaseTest is Test {
     ///      hand, one line at a time.
     bytes32 internal DEFAULT_ADMIN_ROLE;
     bytes32 internal MINTER_ROLE;
-    bytes32 internal CUSTODIAN_ROLE;
 
-    event CustodyBurn(address indexed custodian, address indexed from, uint256 amount);
+    event Burned(address indexed burnedBy, address indexed from, uint256 amount);
     event Transfer(address indexed from, address indexed to, uint256 value);
+    event Initialized(uint64 version);
 
     function setUp() public virtual {
-        token = new StrandsCustodyToken(admin, 18, NAME, SYMBOL);
+        // This test contract is the deployer, so the constructor seats IT as DEFAULT_ADMIN_ROLE — which is
+        // what lets it call `initialize` and hand the role on to `admin` in the same step. No `vm.prank`
+        // wrapper: pranking the deploy would seat a different admin than the one that initializes.
+        token = new StrandsCustodyToken(18, NAME, SYMBOL);
 
         DEFAULT_ADMIN_ROLE = token.DEFAULT_ADMIN_ROLE();
         MINTER_ROLE = token.MINTER_ROLE();
-        CUSTODIAN_ROLE = token.CUSTODIAN_ROLE();
 
-        vm.startPrank(admin);
-        token.grantRole(MINTER_ROLE, minter);
-        token.grantRole(CUSTODIAN_ROLE, custodian);
-        vm.stopPrank();
+        // Hands DEFAULT_ADMIN_ROLE to `admin` and revokes this contract's, so `admin` is the ONLY holder —
+        // `AdminLifecycle.t.sol`'s "last admin" assertions depend on that being exactly true.
+        token.initialize(admin, minter);
 
         vm.prank(minter);
         token.mint(alice, INITIAL_MINT);
+    }
+
+    // ---------- fixtures ----------
+
+    /// @dev A token at an arbitrary magnitude, wired like the fixture's. Metadata is deliberately generic —
+    ///      the suites that use this are about arithmetic, and `Metadata.t.sol` owns naming. The role ids are
+    ///      keccak constants, so the cached MINTER_ROLE applies to any instance.
+    function _deployWithDecimals(uint8 decimals_) internal returns (StrandsCustodyToken t) {
+        t = new StrandsCustodyToken(decimals_, "Strands Custody Fixture", "scFIX");
+        t.initialize(admin, minter);
+    }
+
+    /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no minter, and this test contract still holding
+    ///      DEFAULT_ADMIN_ROLE. The state a deploy leaves behind before its second transaction.
+    function _deployUninitialized() internal returns (StrandsCustodyToken t) {
+        t = new StrandsCustodyToken(18, NAME, SYMBOL);
     }
 
     // ---------- revert expectations ----------
@@ -73,22 +90,29 @@ abstract contract BaseTest is Test {
         _expectMissingRole(caller, MINTER_ROLE);
     }
 
-    function _expectNotCustodian(address caller) internal {
-        _expectMissingRole(caller, CUSTODIAN_ROLE);
-    }
-
     /// @dev Expect `renounceRole` to be rejected for a confirmation argument that
     ///      is not the caller. The one AccessControl error no role gate reaches.
     function _expectBadConfirmation() internal {
         vm.expectRevert(IAccessControl.AccessControlBadConfirmation.selector);
     }
 
+    /// @dev Expect a second `initialize` (or one on an already-initialized token) to be refused.
+    function _expectAlreadyInitialized() internal {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+    }
+
+    /// @dev Expect a guarded call to refuse `estimated` against the chain's `actual`.
+    function _expectSupplyMismatch(uint256 actual, uint256 estimated) internal {
+        vm.expectRevert(abi.encodeWithSelector(StrandsCustodyToken.SupplyMismatch.selector, actual, estimated));
+    }
+
     // ---------- event expectations ----------
 
-    /// @dev `by` rather than `custodian` — the fixture already binds that name.
-    function _expectCustodyBurnEvent(address by, address from, uint256 amount) internal {
+    /// @dev `by` rather than `minter` — the fixture already binds that name, and the burner is only ever the
+    ///      fixture's minter by convention, not by anything the event itself requires.
+    function _expectBurnedEvent(address by, address from, uint256 amount) internal {
         vm.expectEmit(true, true, false, true, address(token));
-        emit CustodyBurn(by, from, amount);
+        emit Burned(by, from, amount);
     }
 
     function _expectTransferEvent(address from, address to, uint256 value) internal {

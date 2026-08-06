@@ -19,8 +19,8 @@ contract GuardMintSequenceTest is GuardMintBase {
         vm.prank(minter);
         token.guardMint(bob, 300 ether, start);
 
-        vm.prank(custodian);
-        token.custodyBurn(bob, 300 ether);
+        vm.prank(minter);
+        token.adminBurn(bob, 300 ether);
         assertEq(token.totalSupply(), start, "precondition: the round trip is closed");
 
         vm.prank(minter);
@@ -45,8 +45,8 @@ contract GuardMintSequenceTest is GuardMintBase {
 
             if (burning) {
                 uint256 amount = bound(draw >> 1, 1, token.balanceOf(alice));
-                vm.prank(custodian);
-                token.custodyBurn(alice, amount);
+                vm.prank(minter);
+                token.adminBurn(alice, amount);
                 supply -= amount;
             } else {
                 uint256 amount = bound(draw >> 1, 0, 1_000 ether);

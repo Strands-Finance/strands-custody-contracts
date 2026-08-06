@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
+import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import { BaseTest } from "../Base.t.sol";
+
+/// @notice The one question an integrator asks first: can an ordinary user mint
+///         or burn? No — and this suite is where that is answered for the WHOLE
+///         supply-changing surface in one place, rather than a path at a time
+///         across `Mint.t.sol`, `AdminBurn.t.sol`, `BurnAuthority.t.sol` and
+///         `guardMint/Authority.t.sol`.
+///
+/// @dev    Two things are easy to conflate and are separated here. The Strands
+///         entrypoints (`mint`, `guardMint`, `adminBurn`, `guardBurn`) were
+///         written gated. The `burn` / `burnFrom` that OZ's {ERC20Burnable}
+///         hands EVERY holder were not — they are `public virtual` upstream and
+///         are gated here only because this contract OVERRIDES them. An override
+///         that were dropped in a merge would restore a holder's ability to
+///         destroy their own claim, and would do so silently: the token would
+///         still compile, still mint, still transfer.
+///         `test_BurnAndBurnFrom_AreOverridden_NotMerelyUnreachable` is the
+///         assertion that would go red.
+///
+///         `SupplyInvariant.t.sol` covers the same property from the other
+///         direction — fuzzer-enumerated over the entire ABI, so an entrypoint
+///         that does not exist yet is covered without editing a test. This file
+///         is the legible statement; that one is the completeness argument.
+contract ExternalUserSurfaceTest is BaseTest {
+    /// @dev Every supply-changing entrypoint, refused for one arbitrary caller,
+    ///      in one place. `caller` is bounded away from the seated roles so the
+    ///      rejection is about the ROLE and never about the address, and a max
+    ///      allowance is granted first so it can never be about a missing
+    ///      approval either.
+    function testFuzz_ArbitraryCaller_IsRefusedByEveryMintAndBurnEntrypoint(address caller) public {
+        vm.assume(caller != minter && caller != admin && caller != address(0));
+
+        uint256 supplyBefore = token.totalSupply();
+        uint256 aliceBefore = token.balanceOf(alice);
+
+        vm.prank(alice);
+        token.approve(caller, type(uint256).max);
+
+        vm.startPrank(caller);
+        _expectNotMinter(caller);
+        token.mint(caller, 1 ether);
+        _expectNotMinter(caller);
+        token.guardMint(caller, 1 ether, supplyBefore);
+        _expectNotMinter(caller);
+        token.adminBurn(alice, 1 ether);
+        _expectNotMinter(caller);
+        token.guardBurn(alice, 1 ether, supplyBefore);
+        _expectNotMinter(caller);
+        token.burn(1 ether);
+        _expectNotMinter(caller);
+        token.burnFrom(alice, 1 ether);
+        vm.stopPrank();
+
+        assertEq(token.totalSupply(), supplyBefore, "no rejected call may move supply");
+        assertEq(token.balanceOf(alice), aliceBefore, "nor a balance");
+        assertEq(token.allowance(alice, caller), type(uint256).max, "nor spend the allowance");
+    }
+
+    /// @dev The same six, for a caller who is unambiguously a HOLDER — funded,
+    ///      and burning an amount they actually own. The fuzz above bounds
+    ///      `caller` away from the roles but says nothing about its balance, so
+    ///      "insufficient balance" remains an available explanation there for
+    ///      the two self-burn paths. Here it is not.
+    function test_FundedHolder_IsRefusedByEveryMintAndBurnEntrypoint() public {
+        vm.prank(alice);
+        token.transfer(bob, 100 ether);
+        assertEq(token.balanceOf(bob), 100 ether, "precondition: bob owns what he is trying to burn");
+
+        vm.startPrank(bob);
+        _expectNotMinter(bob);
+        token.mint(bob, 1 ether);
+        _expectNotMinter(bob);
+        token.guardMint(bob, 1 ether, INITIAL_MINT);
+        _expectNotMinter(bob);
+        token.adminBurn(bob, 1 ether);
+        _expectNotMinter(bob);
+        token.guardBurn(bob, 1 ether, INITIAL_MINT);
+        _expectNotMinter(bob);
+        token.burn(1 ether);
+        _expectNotMinter(bob);
+        token.burnFrom(bob, 1 ether);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(bob), 100 ether, "owning the balance is not authority to destroy it");
+        assertEq(token.totalSupply(), INITIAL_MINT);
+    }
+
+    /// @dev The override check, stated as its own property. A holder calling
+    ///      `burn` must be rejected by the ROLE GATE — an
+    ///      `AccessControlUnauthorizedAccount` — and not by anything upstream
+    ///      would have raised anyway. If the `override onlyRole(MINTER_ROLE)` on
+    ///      either function were dropped, `burn` would succeed outright and
+    ///      `burnFrom` would fail with `ERC20InsufficientAllowance` instead; both
+    ///      are caught here, and neither is caught by asserting a bare revert.
+    function test_BurnAndBurnFrom_AreOverridden_NotMerelyUnreachable() public {
+        // A balance to burn and an allowance to spend, so ERC20Burnable's own
+        // preconditions are all satisfied. The only thing left to refuse the
+        // call is the override.
+        vm.prank(alice);
+        token.approve(bob, 500 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, MINTER_ROLE)
+        );
+        token.burn(100 ether);
+
+        vm.prank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, MINTER_ROLE)
+        );
+        token.burnFrom(alice, 100 ether);
+
+        // The role gate ran FIRST: an ungated burnFrom would have consumed the
+        // allowance on its way through `super`.
+        assertEq(token.allowance(alice, bob), 500 ether, "the gate must precede _spendAllowance");
+        assertEq(token.totalSupply(), INITIAL_MINT);
+    }
+
+    /// @dev The gate is not a balance check in disguise. A holder with a
+    ///      genuinely insufficient balance must STILL be refused for the role,
+    ///      not for the balance — otherwise a reader could conclude that funding
+    ///      the caller is what changes the outcome.
+    function test_HolderWithNoBalance_IsRefusedForTheRole_NotTheBalance() public {
+        assertEq(token.balanceOf(bob), 0, "precondition: bob holds nothing");
+
+        vm.prank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, MINTER_ROLE)
+        );
+        token.burn(1 ether);
+    }
+
+    /// @dev And the control that keeps the four assertions above honest: with
+    ///      the role held, the very same call succeeds. Without this, every test
+    ///      here would keep passing if burning were broken outright.
+    function test_TheSameCallSucceedsForTheMinter() public {
+        vm.prank(minter);
+        token.mint(minter, 1 ether);
+
+        vm.prank(minter);
+        token.burn(1 ether);
+
+        assertEq(token.totalSupply(), INITIAL_MINT, "the refusals above are about the role, not the call");
+    }
+
+    /// @dev What an external user CAN do, so the boundary is drawn from both
+    ///      sides: move their own balance, and approve someone else to. Neither
+    ///      changes how many tokens exist — which is the line the role gate
+    ///      draws.
+    function testFuzz_UnprivilegedActions_AreSupplyNeutral(address destination, uint96 amount) public {
+        vm.assume(destination != address(0) && destination != alice);
+        uint256 value = bound(uint256(amount), 0, INITIAL_MINT);
+
+        vm.startPrank(alice);
+        token.approve(bob, type(uint256).max);
+        token.transfer(destination, value);
+        vm.stopPrank();
+
+        assertEq(token.totalSupply(), INITIAL_MINT, "transfer and approve never change supply");
+    }
+
+    /// @dev Belt and braces on the error identity, so `_expectNotMinter` above
+    ///      cannot silently start matching something else: the rejection names
+    ///      MINTER_ROLE specifically, not merely "some role".
+    function test_TheRejectionNamesMinterRole() public {
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, MINTER_ROLE)
+        );
+        token.adminBurn(alice, 1 ether);
+    }
+
+    /// @dev A holder cannot reach the burn by handing their balance to the
+    ///      contract itself, either — a common shape in tokens that implement a
+    ///      "send to burn" convention. There is no such convention here: the
+    ///      transfer succeeds as an ordinary transfer and supply is unmoved.
+    function test_TransferringToTheTokenItself_DoesNotBurn() public {
+        vm.prank(alice);
+        token.transfer(address(token), 100 ether);
+
+        assertEq(token.balanceOf(address(token)), 100 ether, "the tokens are parked, not destroyed");
+        assertEq(token.totalSupply(), INITIAL_MINT, "supply is unmoved");
+    }
+
+    /// @dev Included so the file states what it does NOT protect against: a
+    ///      holder can still strand value by sending it to an address nobody
+    ///      controls. That reduces the CIRCULATING claim without reducing
+    ///      totalSupply, which is exactly why the backend reconciles against
+    ///      totalSupply and never against a sum of balances.
+    function test_SendingToTheZeroAddress_IsRejectedByERC20_NotSilentlyABurn() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        token.transfer(address(0), 1 ether);
+
+        assertEq(token.totalSupply(), INITIAL_MINT);
+    }
+}

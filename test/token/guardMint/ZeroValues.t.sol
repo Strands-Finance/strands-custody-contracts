@@ -25,13 +25,13 @@ contract GuardMintZeroValuesTest is GuardMintBase {
     }
 
     /// @dev The other half of that pair: burn the supply away entirely and the SAME call refused above must now
-    ///      go through. A token the custodian has emptied is back in the fresh-deployment state `guardMint`'s
-    ///      docs describe, and the guard has to say so — otherwise a fully-redeemed token could never be
-    ///      re-minted without a redeploy.
+    ///      go through. A token that has been emptied is back in the fresh-deployment state `guardMint`'s docs
+    ///      describe, and the guard has to say so — otherwise a fully-redeemed token could never be re-minted
+    ///      without a redeploy.
     function test_GuardMint_ZeroEstimate_IsAcceptedOnceSupplyIsBurnedToZero() public {
-        vm.prank(custodian);
-        token.custodyBurn(alice, INITIAL_MINT);
-        assertEq(token.totalSupply(), 0, "precondition: the custodian destroyed the entire supply");
+        vm.prank(minter);
+        token.adminBurn(alice, INITIAL_MINT);
+        assertEq(token.totalSupply(), 0, "precondition: the entire supply was destroyed");
 
         vm.prank(minter);
         token.guardMint(bob, 50 ether, 0);

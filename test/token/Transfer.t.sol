@@ -88,20 +88,16 @@ contract TransferTest is BaseTest {
         vm.startPrank(minter);
         token.mint(admin, 10 ether);
         token.mint(minter, 10 ether);
-        token.mint(custodian, 10 ether);
         vm.stopPrank();
 
         vm.prank(admin);
         token.transfer(bob, 10 ether);
         vm.prank(minter);
         token.transfer(bob, 10 ether);
-        vm.prank(custodian);
-        token.transfer(bob, 10 ether);
 
-        assertEq(token.balanceOf(bob), 30 ether);
+        assertEq(token.balanceOf(bob), 20 ether);
         assertEq(token.balanceOf(admin), 0);
         assertEq(token.balanceOf(minter), 0);
-        assertEq(token.balanceOf(custodian), 0);
     }
 
     // ---------- the checks that DO still reject ----------
@@ -114,7 +110,7 @@ contract TransferTest is BaseTest {
         token.transfer(bob, 1_001 ether);
     }
 
-    /// @dev Transfer is not a burn path. Burning is CUSTODIAN_ROLE-only, so
+    /// @dev Transfer is not a burn path. Burning is MINTER_ROLE-only, so
     ///      reaching `address(0)` through `transfer` would be a way around that
     ///      gate — OZ rejects it before any balance moves.
     function test_Transfer_ToZeroAddress_Reverts() public {
