@@ -35,8 +35,51 @@ trade taken when `CUSTODIAN_ROLE` was removed — one operating key instead of
 two, matching OpenZeppelin's model of narrow named roles for operations and
 `DEFAULT_ADMIN_ROLE` for governance alone.
 
-Transfers are ordinary, unrestricted ERC20: any holder may `transfer` /
-`transferFrom` to any address, exactly as with a stock token.
+## Transfers are default-deny
+
+Transfers are **not** ordinary ERC20. `transfer` and `transferFrom` are gated on
+a **destination allowlist**, and every address starts closed:
+
+| Member | Role | Purpose |
+| --- | --- | --- |
+| `allowedDestination(destination)` | anyone | Whether `destination` may receive |
+| `setDestinationAllowed(destination, allowed)` | `DEFAULT_ADMIN_ROLE` | Open or close one destination |
+| `DestinationAllowedSet(destination, allowed)` | — | Emitted on every write, including a no-op one |
+| `TransferDestinationNotAllowed(destination)` | — | The refusal |
+
+The list is keyed by **destination alone**. It is a set of permitted sinks, not
+a graph of permitted routes: allowlisting `bob` lets every holder reach `bob`,
+and lets `bob` reach nothing. `transferFrom` checks only `to` — never `from`,
+never `msg.sender` — so the ERC20 allowance remains the whole story of *who may
+act*, and the allowlist is the whole story of *where value may land*.
+
+**A freshly deployed token cannot transfer anywhere.** That is the intended
+posture, not an initialisation gap. Minting still works, so the deploy leaves a
+usable token; the admin opens destinations afterwards, one call each.
+
+Issuance and redemption are **exempt**. The guard lives in the `transfer` /
+`transferFrom` overrides rather than in `_update`, so `_mint` and `_burn` do not
+route through it — a balance can always be minted to, and redeemed from, an
+address that appears nowhere in the list. A stranded balance is therefore still
+redeemable. The cost of that placement: any future function that moves a balance
+must go through `transfer` / `transferFrom` or re-state the guard, because OZ's
+`_transfer` is not virtual and inherits nothing.
+
+Two consequences worth planning around:
+
+- **The guard runs first.** A refused call reports
+  `TransferDestinationNotAllowed` even when the amount also exceeds the balance,
+  and even when `to` is the zero address. On `transferFrom` it runs before
+  `_spendAllowance`, so a refused call never reaches the spend at all.
+- **Writer liveness is transfer liveness.** If `DEFAULT_ADMIN_ROLE` loses its
+  last holder the list freezes at whatever it held in that block. Routes already
+  open stay open forever; no new one can ever be added. Redemption survives that
+  — it consults no list — but mobility does not.
+
+The admin's power here is over **mobility, not value**: closing every
+destination strands a balance where it is and cannot move it anywhere, least of
+all to the admin. There is no `adminTransfer` escape hatch, and adding one would
+undo that property.
 
 ## Deployment is two transactions
 
@@ -141,16 +184,21 @@ check" sentinel: it is honoured only when the supply really is zero. The revert
 carries `actualSupply`, so the corrected estimate is in the revert data and a
 caller can re-read and retry.
 
-Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with one
-behavioral change:
+Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with two
+behavioral changes:
 
 - `burn` and `burnFrom` are `MINTER_ROLE`-only and emit `Burned`. They keep
   their standard selectors, so an integration calling them still compiles — it
   will revert with `AccessControlUnauthorizedAccount` unless the caller holds
   `MINTER_ROLE`. `burnFrom` still spends the allowance, and the role check runs
   *before* it, so a rejected call leaves the allowance untouched.
+- `transfer` and `transferFrom` refuse any destination the admin has not opened,
+  reverting with `TransferDestinationNotAllowed`. Same selectors, same
+  signatures — an integration compiles unchanged and fails at runtime until the
+  destination is allowlisted.
 
-`transfer`, `transferFrom` and `approve` are untouched.
+`approve` is untouched: an allowance may be granted to anyone, and says nothing
+about whether a transfer using it will land.
 
 ## Operating the token
 
@@ -176,11 +224,16 @@ cast send $TOKEN "initialize(address,address)" $ADMIN $MINTER \
 cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 
-# 4. The holder moves their balance like any ERC20
+# 4. Open the destination. Until this lands, step 5 reverts with
+#    TransferDestinationNotAllowed — the list starts empty and the deploy seeds nothing.
+cast send $TOKEN "setDestinationAllowed(address,bool)" $DEST true \
+  --rpc-url $RPC_URL --private-key $ADMIN_PK
+
+# 5. Now the holder can move their balance
 cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
   --rpc-url $RPC_URL --private-key $HOLDER_PK
 
-# 5. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Prefer
+# 6. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Prefer
 #    guardBurn, which refuses the burn unless the chain's supply still matches the
 #    reading the amount was decided against; adminBurn is the unguarded fallback.
 cast send $TOKEN "guardBurn(address,uint256,uint256)" $HOLDER 100ether $SUPPLY_YOU_READ \
@@ -224,10 +277,15 @@ In production:
 - Do not grant `DEFAULT_ADMIN_ROLE` or `MINTER_ROLE` to EOAs in production.
 - **Never renounce the last `DEFAULT_ADMIN_ROLE` holder.** The role is its own
   role admin, so once the last holder is gone no party can bootstrap a new one
-  and the role graph freezes permanently — no new minter, ever. Balances still
-  move (transfers need no privilege), but if the existing minter keys are also
-  lost, nothing can ever be redeemed again. Keep at least two holders of each
-  role.
+  and the role graph freezes permanently — no new minter, ever. **The transfer
+  allowlist freezes with it:** balances move only along routes opened before
+  that block, and no destination can ever be added again. If the list was empty,
+  no transfer will ever succeed. And if the existing minter keys are also lost,
+  nothing can ever be redeemed either. Keep at least two holders of each role.
+- **Open destinations deliberately, and audit `DestinationAllowedSet`.** It is
+  emitted on every write including a no-op, so the log is the complete record of
+  what the admin asserted — there is no on-chain enumeration of the list, so
+  that log is the only way to reconstruct it.
 - Monitor `Burned`. All four paths that destroy supply emit it, so it is the
   complete record of redemption, and `burnedBy` always names a `MINTER_ROLE`
   holder.

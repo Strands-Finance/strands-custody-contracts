@@ -69,8 +69,12 @@ contract BurnAuthorityTest is BaseTest {
     }
 
     /// @dev A transfer recipient is just another holder — receiving a balance
-    ///      grants it no power to destroy one.
+    ///      grants it no power to destroy one. Being an ALLOWED destination
+    ///      grants it none either: the allowlist says where value may land, and
+    ///      nothing about what the recipient may then do with it.
     function test_Recipient_CannotBurnOwnBalance() public {
+        _allow(bob);
+
         vm.prank(alice);
         token.transfer(bob, 300 ether);
 

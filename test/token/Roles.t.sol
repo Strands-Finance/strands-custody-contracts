@@ -11,10 +11,12 @@ import { BaseTest } from "../Base.t.sol";
 ///
 /// @dev    Two roles, following OpenZeppelin's own division: DEFAULT_ADMIN_ROLE
 ///         is governance and MINTER_ROLE is the single operating capability.
-///         DEFAULT_ADMIN_ROLE therefore has exactly one power — moving
-///         MINTER_ROLE around — which makes `grantRole` / `revokeRole` the WHOLE
-///         admin surface, pinned here directly rather than only implied by the
-///         mint and burn suites' negative cases.
+///         DEFAULT_ADMIN_ROLE has exactly two powers — moving MINTER_ROLE
+///         around, and writing the transfer destination allowlist. This file
+///         owns the first, `grantRole` / `revokeRole`; `Allowlist.t.sol` owns the
+///         second. Between them they are the WHOLE admin surface, so both are
+///         pinned directly rather than only implied by the mint and burn suites'
+///         negative cases.
 contract RolesTest is BaseTest {
     // ---------- the seated role graph ----------
 

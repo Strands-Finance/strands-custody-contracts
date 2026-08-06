@@ -60,6 +60,8 @@ contract GuardBurnTest is BaseTest {
     ///      refusal cannot be confused with a self-burn restriction, and paired with the minter succeeding on
     ///      the same call so the rejection is about the ROLE GATE and not the arguments.
     function test_FundedHolder_CannotGuardBurn() public {
+        _allow(bob); // funding bob is a transfer like any other, so the route has to be open first
+
         vm.prank(alice);
         token.transfer(bob, 50 ether);
 

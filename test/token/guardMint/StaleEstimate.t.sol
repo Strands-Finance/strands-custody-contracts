@@ -25,7 +25,10 @@ contract GuardMintStaleEstimateTest is GuardMintBase {
             vm.prank(minter);
             token.adminBurn(from, amount);
         } else if (path == BurnPath.Self) {
-            vm.prank(from); // `burn` destroys the CALLER's balance, so it has to be the minter's first
+            // `burn` destroys the CALLER's balance, so it has to be the minter's first — and that hop is an
+            // ordinary transfer, so the minter has to be an allowed destination for it.
+            _allow(minter);
+            vm.prank(from);
             token.transfer(minter, amount);
             vm.prank(minter);
             token.burn(amount);
