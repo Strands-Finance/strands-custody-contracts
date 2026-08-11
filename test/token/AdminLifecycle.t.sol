@@ -2,10 +2,11 @@
 pragma solidity ^0.8.24;
 
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
+import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { BaseTest } from "../Base.t.sol";
 
 /// @notice What the admin can and cannot reach, and what happens as
-///         DEFAULT_ADMIN_ROLE changes hands. Two properties carry the security
+///         DEFAULT_ADMIN_ROLE changes hands. Three properties carry the security
 ///         story the README states:
 ///
 ///         1. The admin holds NO power over balances. It can reach one by
@@ -15,8 +16,12 @@ import { BaseTest } from "../Base.t.sol";
 ///            makes OpenZeppelin's "keep DEFAULT_ADMIN_ROLE cold" advice
 ///            actionable here, and the reason the operating surface was NOT
 ///            folded onto DEFAULT_ADMIN_ROLE when the roles were collapsed.
-///         2. DEFAULT_ADMIN_ROLE is its own role admin, so losing the last
-///            holder freezes the role graph permanently.
+///         2. The admin DOES hold a standing power over MOBILITY: it writes the
+///            destination allowlist. That can strand a balance where it is; it
+///            can never move one, least of all to the admin.
+///         3. DEFAULT_ADMIN_ROLE is its own role admin, so losing the last
+///            holder freezes the role graph permanently — and the allowlist
+///            with it.
 ///
 /// @dev    This suite relies on the plain `BaseTest` fixture, where `admin` is
 ///         the ONLY holder of DEFAULT_ADMIN_ROLE. Adding a second holder to the
@@ -24,9 +29,10 @@ import { BaseTest } from "../Base.t.sol";
 contract AdminLifecycleTest is BaseTest {
     // ---------- the admin has no standing power over balances ----------
 
-    /// @dev The headline claim. Before the transfer allowlist was removed the
-    ///      admin could seize any balance via `adminTransfer`; it now has no
-    ///      path to one at all without first appointing itself.
+    /// @dev The headline claim. An earlier version carried `adminTransfer`, a
+    ///      DEFAULT_ADMIN_ROLE entrypoint that moved any balance anywhere; it is
+    ///      gone and did not come back with the allowlist. The admin now has no
+    ///      path to a balance at all without first appointing itself.
     function test_Admin_HasNoPowerOverBalances() public {
         vm.startPrank(admin);
 
@@ -47,7 +53,16 @@ contract AdminLifecycleTest is BaseTest {
 
     /// @dev The admin cannot move someone else's tokens by any ordinary route
     ///      either — no allowance, no privileged transfer entrypoint.
+    ///
+    ///      `admin` is opened as a destination first, and that is the point
+    ///      rather than a setup detail: the admin can make ITSELF a legal sink
+    ///      for value and still cannot pull any. It also forces the allowance
+    ///      to be the thing under test — the destination guard runs before
+    ///      `_spendAllowance`, so with `admin` closed this would revert for a
+    ///      reason that has nothing to do with the claim.
     function test_Admin_CannotMoveAnotherHoldersBalance() public {
+        _allow(admin);
+
         vm.prank(admin);
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, MINTER_ROLE)
@@ -55,7 +70,7 @@ contract AdminLifecycleTest is BaseTest {
         token.burnFrom(alice, 1 ether);
 
         vm.prank(admin);
-        vm.expectRevert(); // no allowance from alice
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, admin, 0, 1 ether));
         token.transferFrom(alice, admin, 1 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT);
@@ -87,6 +102,23 @@ contract AdminLifecycleTest is BaseTest {
         assertEq(token.balanceOf(alice), INITIAL_MINT - 100 ether, "one grant opened the burn side");
         assertEq(token.balanceOf(admin), 100 ether, "and the mint side, in the same appointment");
         assertTrue(token.hasRole(MINTER_ROLE, admin), "the escalation is durable state, not a transient bypass");
+    }
+
+    // ---------- the standing power the admin DOES hold ----------
+
+    /// @dev Stated at its limit. Closing the route immobilises alice completely
+    ///      — and moves her balance nowhere, least of all to the admin. Mobility
+    ///      and ownership are separate powers and the admin holds only the first.
+    function test_Admin_CanStrandABalanceButNeverSeizeIt() public {
+        _allow(bob);
+        _disallow(bob);
+
+        vm.prank(alice);
+        _expectDestinationNotAllowed(bob);
+        token.transfer(bob, 1 ether);
+
+        assertEq(token.balanceOf(alice), INITIAL_MINT, "stranded, not seized");
+        assertEq(token.balanceOf(admin), 0, "the admin gained nothing by closing the route");
     }
 
     // ---------- handover: the rotation that does not brick anything ----------
@@ -253,8 +285,13 @@ contract AdminLifecycleTest is BaseTest {
 
     /// @dev The freeze is a snapshot, not a shutdown: incumbents keep every
     ///      power they already held. Supply can still move while those keys
-    ///      live — and, now that transfers are unrestricted, so can balances.
-    function test_FrozenRoleGraph_LeavesIncumbentsAndTransfersWorking() public {
+    ///      live — but the allowlist freezes too, so balances move only along
+    ///      routes opened BEFORE the last admin went. `bob` is opened first for
+    ///      exactly that reason, and `carol` is left closed to show the other
+    ///      half: no destination can ever be added again, by anyone.
+    function test_FrozenRoleGraph_FreezesTheAllowlistWithIt() public {
+        _allow(bob);
+
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
@@ -266,14 +303,22 @@ contract AdminLifecycleTest is BaseTest {
 
         vm.prank(alice);
         token.transfer(bob, 100 ether);
-        assertEq(token.balanceOf(bob), 100 ether, "transfers need no privilege, so they survive the freeze");
+        assertEq(token.balanceOf(bob), 100 ether, "a destination open at the freeze stays open");
+
+        vm.prank(admin);
+        _expectNotAdmin(admin);
+        token.setDestinationAllowed(carol, true);
+
+        vm.prank(alice);
+        _expectDestinationNotAllowed(carol);
+        token.transfer(carol, 1 ether);
     }
 
     /// @dev The end state the README's "keep at least two holders of each role"
     ///      rule exists to prevent, and it now takes only TWO losses rather than
     ///      three: one operating role means the minter is the sole redemption
-    ///      path, so admin + minter gone is terminal. Balances still move freely
-    ///      but can never be redeemed by anyone, ever.
+    ///      path, so admin + minter gone is terminal. Balances still move along
+    ///      already-open routes but can never be redeemed by anyone, ever.
     ///
     ///      The narrower loss is worth stating too: losing ONLY the minter is
     ///      recoverable, because the admin can appoint a replacement — which is
@@ -281,6 +326,8 @@ contract AdminLifecycleTest is BaseTest {
     ///      pins. It is the surviving admin, not the surviving minter, that
     ///      makes the difference.
     function test_LosingTheLastAdminAndMinter_MakesRedemptionImpossible() public {
+        _allow(bob); // the last thing the admin can ever do for this balance
+
         vm.prank(minter);
         token.renounceRole(MINTER_ROLE, minter);
         vm.prank(admin);
@@ -306,10 +353,11 @@ contract AdminLifecycleTest is BaseTest {
         token.grantRole(DEFAULT_ADMIN_ROLE, carol);
         vm.stopPrank();
 
+        // ...yet the balance still moves, along the route opened before the freeze
         vm.prank(alice);
         token.transfer(bob, INITIAL_MINT);
 
-        assertEq(token.balanceOf(bob), INITIAL_MINT, "value still moves");
+        assertEq(token.balanceOf(bob), INITIAL_MINT, "value still moves, but only where it was already allowed to");
         assertEq(token.totalSupply(), INITIAL_MINT, "but no supply can ever be destroyed again");
     }
 

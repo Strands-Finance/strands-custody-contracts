@@ -35,5 +35,11 @@ contract Deploy is Script {
         console2.log("Decimals:", decimals_);
         console2.log("Name:", name_);
         console2.log("Symbol:", symbol_);
+        // Not seeded here on purpose: `initialize` hands DEFAULT_ADMIN_ROLE to ADMIN_ADDRESS and REVOKES the
+        // deployer's in the same call, so a setDestinationAllowed inside this broadcast would revert for every
+        // deploy except the single-key shape where admin == deployer. Minting still works — it consults no list
+        // — so a deploy that stops here leaves a usable token that simply cannot transfer yet.
+        console2.log("Transfer allowlist: EMPTY. No transfer will succeed until the admin calls");
+        console2.log("  setDestinationAllowed(destination, true) for each permitted recipient.");
     }
 }

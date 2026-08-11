@@ -67,6 +67,19 @@ contract SupplyInvariantTest is BaseTest {
         assertFalse(token.hasRole(MINTER_ROLE, carol), "a holder acquired the operating role");
     }
 
+    /// @dev The admin's OTHER standing power, held to the same standard. The
+    ///      fuzzer enumerates the whole ABI, so `setDestinationAllowed` is being
+    ///      driven from these three senders on every run — and every one of those
+    ///      calls must be refused. The senders themselves are the addresses worth
+    ///      asserting on, because opening a route for YOURSELF is the escalation
+    ///      that would matter: `setUp` opens nothing, so any `true` here is a gate
+    ///      that failed.
+    function invariant_TheAllowlistIsUnreachableWithoutTheAdmin() public view {
+        assertFalse(token.allowedDestination(alice), "an unprivileged caller opened a destination");
+        assertFalse(token.allowedDestination(bob), "an unprivileged caller opened a destination");
+        assertFalse(token.allowedDestination(carol), "an unprivileged caller opened a destination");
+    }
+
     /// @dev The control. With `fail_on_revert = false` an invariant over a
     ///      contract nobody can successfully call is vacuously true, so this
     ///      pins that the pinned senders CAN in fact reach the token and move
@@ -75,6 +88,10 @@ contract SupplyInvariantTest is BaseTest {
     ///      mis-set target), this goes red while the invariants stay green.
     function test_TheFuzzersTargetsAreReachable() public {
         uint256 supplyBefore = token.totalSupply();
+
+        // Opened here rather than in `setUp`, so the invariant runs keep facing a
+        // wholly closed list and the assertion above stays about the gate.
+        _allow(carol);
 
         vm.startPrank(alice);
         token.approve(bob, 1 ether);

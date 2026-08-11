@@ -5,11 +5,17 @@ import { Test } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
+import { ITransferAllowlist } from "../src/interfaces/ITransferAllowlist.sol";
 
 /// @title  Shared test fixture
 /// @notice Deploys the token, seats DEFAULT_ADMIN_ROLE / MINTER_ROLE through
 ///         `initialize` and funds `alice` with `INITIAL_MINT`. Every suite under
 ///         `test/` extends this so the starting state is identical across files.
+/// @dev    The transfer allowlist starts EMPTY and `setUp` opens nothing. That
+///         is what makes the mint and burn suites double as the proof that
+///         issuance and redemption are exempt: they run start to finish against
+///         a list with no entries in it. The suites that need a destination open
+///         say so in their own `setUp` override.
 abstract contract BaseTest is Test {
     StrandsCustodyToken internal token;
 
@@ -75,6 +81,22 @@ abstract contract BaseTest is Test {
         t = new StrandsCustodyToken(18, NAME, SYMBOL);
     }
 
+    // ---------- allowlist arrangement (admin-pranked) ----------
+
+    /// @dev Open one destination. One argument, not two — the list is keyed by
+    ///      destination alone, so there is no holder to name and no direction to
+    ///      choose.
+    function _allow(address destination) internal {
+        vm.prank(admin);
+        token.setDestinationAllowed(destination, true);
+    }
+
+    /// @dev Close one destination.
+    function _disallow(address destination) internal {
+        vm.prank(admin);
+        token.setDestinationAllowed(destination, false);
+    }
+
     // ---------- revert expectations ----------
 
     /// @dev Expect the next call to be rejected for lacking `role`.
@@ -88,6 +110,16 @@ abstract contract BaseTest is Test {
 
     function _expectNotMinter(address caller) internal {
         _expectMissingRole(caller, MINTER_ROLE);
+    }
+
+    /// @dev Expect the next call to be rejected by the destination allowlist.
+    ///      The error is declared on `ITransferAllowlist`, so it is NOT
+    ///      reachable as `StrandsCustodyToken.TransferDestinationNotAllowed` —
+    ///      an inherited error is not a member of the deriving type. Hiding that
+    ///      qualification here is the same move `_expectMissingRole` makes for
+    ///      `IAccessControl.AccessControlUnauthorizedAccount`.
+    function _expectDestinationNotAllowed(address destination) internal {
+        vm.expectRevert(abi.encodeWithSelector(ITransferAllowlist.TransferDestinationNotAllowed.selector, destination));
     }
 
     /// @dev Expect `renounceRole` to be rejected for a confirmation argument that

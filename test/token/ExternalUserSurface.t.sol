@@ -67,6 +67,8 @@ contract ExternalUserSurfaceTest is BaseTest {
     ///      "insufficient balance" remains an available explanation there for
     ///      the two self-burn paths. Here it is not.
     function test_FundedHolder_IsRefusedByEveryMintAndBurnEntrypoint() public {
+        _allow(bob); // funding bob is a transfer like any other, so the route has to be open first
+
         vm.prank(alice);
         token.transfer(bob, 100 ether);
         assertEq(token.balanceOf(bob), 100 ether, "precondition: bob owns what he is trying to burn");
@@ -153,15 +155,24 @@ contract ExternalUserSurfaceTest is BaseTest {
     ///      sides: move their own balance, and approve someone else to. Neither
     ///      changes how many tokens exist — which is the line the role gate
     ///      draws.
+    ///
+    ///      `destination` is OPENED first. Without that the allowlist refuses
+    ///      every fuzzed address and the assertion below holds vacuously — supply
+    ///      is trivially unchanged when nothing moved. Opening it is what keeps
+    ///      this a statement about transfers rather than about the guard, which
+    ///      `Allowlist.t.sol` owns.
     function testFuzz_UnprivilegedActions_AreSupplyNeutral(address destination, uint96 amount) public {
         vm.assume(destination != address(0) && destination != alice);
         uint256 value = bound(uint256(amount), 0, INITIAL_MINT);
+
+        _allow(destination);
 
         vm.startPrank(alice);
         token.approve(bob, type(uint256).max);
         token.transfer(destination, value);
         vm.stopPrank();
 
+        assertEq(token.balanceOf(destination), value, "the transfer actually landed");
         assertEq(token.totalSupply(), INITIAL_MINT, "transfer and approve never change supply");
     }
 
@@ -181,6 +192,8 @@ contract ExternalUserSurfaceTest is BaseTest {
     ///      "send to burn" convention. There is no such convention here: the
     ///      transfer succeeds as an ordinary transfer and supply is unmoved.
     function test_TransferringToTheTokenItself_DoesNotBurn() public {
+        _allow(address(token)); // the token is an ordinary destination, and holds no standing of its own
+
         vm.prank(alice);
         token.transfer(address(token), 100 ether);
 
@@ -188,14 +201,23 @@ contract ExternalUserSurfaceTest is BaseTest {
         assertEq(token.totalSupply(), INITIAL_MINT, "supply is unmoved");
     }
 
-    /// @dev Included so the file states what it does NOT protect against: a
-    ///      holder can still strand value by sending it to an address nobody
-    ///      controls. That reduces the CIRCULATING claim without reducing
-    ///      totalSupply, which is exactly why the backend reconciles against
-    ///      totalSupply and never against a sum of balances.
-    function test_SendingToTheZeroAddress_IsRejectedByERC20_NotSilentlyABurn() public {
+    /// @dev The zero address is refused, and is NOT a back door to a burn. Which
+    ///      check refuses it is worth being exact about: `address(0)` is on no
+    ///      allowlist and the guard runs before `ERC20._transfer`, so the
+    ///      allowlist answers and OZ's own `ERC20InvalidReceiver` is never
+    ///      reached. Both would refuse it; only one of them gets to. That is why
+    ///      this asserts the destination error rather than the ERC20 one — the
+    ///      same ordering `Transfer.t.sol` and `TransferFrom.t.sol` pin.
+    ///
+    ///      What the file still does NOT protect against: a holder can strand
+    ///      value by sending it to an ALLOWED address nobody controls. That
+    ///      reduces the CIRCULATING claim without reducing totalSupply, which is
+    ///      exactly why the backend reconciles against totalSupply and never
+    ///      against a sum of balances. The allowlist narrows that surface to
+    ///      addresses an admin opened; it does not close it.
+    function test_SendingToTheZeroAddress_IsRefused_NotSilentlyABurn() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        _expectDestinationNotAllowed(address(0));
         token.transfer(address(0), 1 ether);
 
         assertEq(token.totalSupply(), INITIAL_MINT);

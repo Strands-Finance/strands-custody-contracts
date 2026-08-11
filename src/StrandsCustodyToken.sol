@@ -5,6 +5,7 @@ import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC20Burnable } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 
 /// @title  Strands Custody Token
 /// @notice ERC20 token where a balance is a claim against an off-chain ledger, so changing how many tokens
@@ -12,19 +13,49 @@ import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable
 ///         supply, `adminBurn`, `guardBurn`, `burn` and `burnFrom` destroy it, and all six are MINTER_ROLE.
 ///         A reconciler therefore gets two invariants rather than one — every burn emits {Burned}, AND every
 ///         burn is a MINTER_ROLE holder. A holder can do none of it, and cannot delegate the power via an
-///         ERC20 allowance. Transfers are ordinary, unrestricted ERC20.
+///         ERC20 allowance.
 ///
-/// @dev  
+///         Transfers are default-deny against a destination allowlist: a holder may send only to addresses
+///         DEFAULT_ADMIN_ROLE has opened. Issuance and redemption are exempt, so a balance can always be
+///         minted to, and redeemed from, an address that is on no list.
+///
+/// @dev
 ///         {Initializable} is used here as a call-this-exactly-once guard, in the same role
 ///         `SimpleInitializable` plays across the Strands contracts — NOT as an upgradeability story. This
 ///         token is NOT proxy-safe: `_decimals` is immutable and ERC20's name/symbol are written by the
 ///         constructor, so behind a proxy all three would read empty.
-contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
+///
+///         Two things about WHERE the transfer guard lives, both deliberate:
+///
+///         It sits in the `transfer` / `transferFrom` OVERRIDES, not in `_update`. `_update` is the single
+///         funnel for mints, burns AND transfers, so a guard there has to reconstruct which of the three it
+///         is from zero-address sentinels — and an earlier version of this contract did exactly that.
+///         Guarding the two user-callable entrypoints instead makes the exemption structural: `_mint` and
+///         `_burn` do not route through them, so there is no exemption to encode and none to get wrong. The
+///         cost is that the guard is NOT inherited by any future caller of `_transfer` or `_update` — OZ's
+///         `_transfer` is not even virtual. There are none today. ANY NEW FUNCTION THAT MOVES A BALANCE MUST
+///         GO THROUGH `transfer` / `transferFrom` OR RE-STATE THE GUARD.
+///
+///         It reads `to` and nothing else. Not `from`, not `msg.sender`. On `transferFrom` that means the
+///         SPENDER'S standing and the OWNER'S standing are both irrelevant; the ERC20 allowance is still the
+///         whole story of who may act, and the allowlist is the whole story of where value may land.
+contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable, ITransferAllowlist {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     /// @notice Token decimals, fixed at deploy time to match the custodied
     ///         asset's native base unit (e.g. USDC = 6, BTC = 8, ETH = 18).
     uint8 private immutable _decimals;
+
+    /// @notice Whether `destination` may receive tokens by transfer.
+    /// @dev    Flat and destination-keyed on purpose. An earlier version keyed this `[holder][destination]`,
+    ///         which made the list a graph of O(holders x destinations) directed edges that an operator had
+    ///         to open one pair at a time and could never enumerate. One key states the property that was
+    ///         actually being enforced: some addresses are acceptable places for value to land, and the rest
+    ///         are not.
+    ///
+    ///         `public` rather than a hand-written getter: the compiler-generated getter satisfies
+    ///         {ITransferAllowlist-allowedDestination} exactly, signature and mutability included.
+    mapping(address destination => bool) public override allowedDestination;
 
     /// @notice Emitted on every burn, whichever entrypoint destroyed the supply.
     /// @dev    A reconciler tracking the off-chain ledger can subscribe to this alone: `adminBurn`,
@@ -166,5 +197,57 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable {
     function burnFrom(address from, uint256 amount) public override onlyRole(MINTER_ROLE) {
         super.burnFrom(from, amount);
         emit Burned(msg.sender, from, amount);
+    }
+
+    /// @inheritdoc ITransferAllowlist
+    /// @dev The write is unconditional and so is the event — see the note on
+    ///      {ITransferAllowlist-DestinationAllowedSet}. Restricted to
+    ///      DEFAULT_ADMIN_ROLE, which makes this the admin's SECOND standing
+    ///      power after the role graph. It is a power over MOBILITY, not over
+    ///      value: closing every destination strands a balance where it is, and
+    ///      cannot move it anywhere, least of all to the admin. No burn path
+    ///      consults this list, so a stranded balance is still redeemable.
+    function setDestinationAllowed(address destination, bool allowed) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        allowedDestination[destination] = allowed;
+        emit DestinationAllowedSet(destination, allowed);
+    }
+
+    /// @notice Move `value` of the caller's balance to `to`, which must be an
+    ///         allowed destination.
+    /// @dev    The guard runs BEFORE `super`, so a refused transfer never
+    ///         reaches `ERC20._transfer` and never reads a balance. It
+    ///         therefore beats both of OZ's own checks: a call refused here
+    ///         reports {ITransferAllowlist-TransferDestinationNotAllowed} even
+    ///         when the amount also exceeds the balance, and even when `to` is
+    ///         the zero address.
+    function transfer(address to, uint256 value) public override returns (bool) {
+        _requireDestinationAllowed(to);
+        return super.transfer(to, value);
+    }
+
+    /// @notice Move `value` of `from`'s balance to `to`, spending the caller's
+    ///         allowance. `to` must be an allowed destination.
+    /// @dev    ONLY `to` is checked. Neither `from` nor `msg.sender` is
+    ///         consulted, so an allowlisted spender gains nothing and a
+    ///         non-allowlisted owner loses nothing — this is the one place a
+    ///         per-holder list and a destination list visibly disagree, and the
+    ///         destination list is what this contract enforces.
+    ///
+    ///         Same ordering argument as `transfer`, with one extra
+    ///         consequence: the guard runs before `_spendAllowance`, so a
+    ///         refused call does not merely have its allowance spend UNWOUND by
+    ///         the revert — it never reaches the spend at all. Identical shape
+    ///         to the role check on `burnFrom` above.
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        _requireDestinationAllowed(to);
+        return super.transferFrom(from, to, value);
+    }
+
+    /// @dev The single allowlist read, shared by both entrypoints. Private and
+    ///      not `internal`: nothing outside these two calls it, and keeping it
+    ///      unreachable from a subclass is what stops it becoming a check a
+    ///      future entrypoint is assumed to have made.
+    function _requireDestinationAllowed(address destination) private view {
+        if (!allowedDestination[destination]) revert TransferDestinationNotAllowed(destination);
     }
 }

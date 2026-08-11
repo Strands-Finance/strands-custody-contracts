@@ -4,17 +4,23 @@ pragma solidity ^0.8.24;
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice `transferFrom` is ordinary, unrestricted ERC20: the ERC20 allowance
-///         is now the ONLY thing standing between a spender and the owner's
-///         balance.
+/// @notice The ERC20 allowance under `transferFrom`: what spends it, what does
+///         not, and what a rejected call leaves behind. Once the destination is
+///         permitted, the allowance is the whole story of who may act.
 ///
-/// @dev    That is the load-bearing change. The token used to require BOTH an
-///         allowance and an admin-approved destination — keyed by the token
-///         owner, never the spender — so an allowance alone could not move
-///         value. It can now, which makes the allowance the whole authorisation
-///         story and worth pinning in detail: what spends it, what does not, and
-///         what a rejected call leaves behind.
+/// @dev    The destination check is `Allowlist.t.sol`'s subject, not this
+///         file's. It runs BEFORE `_spendAllowance`, so without the `setUp`
+///         override below it would answer first and swallow every
+///         `ERC20InsufficientAllowance` this suite exists to pin.
 contract TransferFromTest is BaseTest {
+    /// @dev Opens only the two addresses this file sends to. The SHARED fixture
+    ///      still opens nothing.
+    function setUp() public override {
+        super.setUp();
+        _allow(bob);
+        _allow(carol);
+    }
+
     function test_TransferFrom_MovesOwnerBalanceAndSpendsAllowance() public {
         vm.prank(alice);
         token.approve(carol, 300 ether);
@@ -46,8 +52,10 @@ contract TransferFromTest is BaseTest {
         assertEq(token.balanceOf(bob), 100 ether);
     }
 
-    /// @dev A spender may route value to themselves. Under the allowlist this
-    ///      needed a separate `alice -> carol` edge on top of the allowance.
+    /// @dev A spender may route value to themselves, provided they are an
+    ///      allowed destination like anyone else — the allowance decides who may
+    ///      act, the list decides where value may land, and here `carol` happens
+    ///      to be both.
     function test_TransferFrom_SpenderMayBeTheDestination() public {
         vm.prank(alice);
         token.approve(carol, 300 ether);
@@ -117,13 +125,15 @@ contract TransferFromTest is BaseTest {
     }
 
     /// @dev `transferFrom` is not a burn path either — see the `transfer`
-    ///      counterpart in `Transfer.t.sol`.
+    ///      counterpart in `Transfer.t.sol`. `address(0)` is on no allowlist and
+    ///      `setUp` does not open it, so the guard refuses this before the
+    ///      allowance is even read.
     function test_TransferFrom_ToZeroAddress_Reverts() public {
         vm.prank(alice);
         token.approve(carol, 100 ether);
 
         vm.prank(carol);
-        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        _expectDestinationNotAllowed(address(0));
         token.transferFrom(alice, address(0), 100 ether);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "supply must be untouched");
@@ -145,6 +155,61 @@ contract TransferFromTest is BaseTest {
         assertEq(token.allowance(alice, carol), 5_000 ether, "allowance must survive a rejected transferFrom");
         assertEq(token.balanceOf(alice), INITIAL_MINT);
         assertEq(token.balanceOf(bob), 0);
+    }
+
+    /// @dev The theft shape, stated for an ARBITRARY caller rather than `carol`,
+    ///      and with the value routed to the caller THEMSELVES rather than to a
+    ///      third party — the two things
+    ///      `test_TransferFrom_WithoutAllowance_Reverts` above holds fixed.
+    ///
+    ///      `attacker` is OPENED as a destination first, and that is the whole
+    ///      point of the test rather than a detail of it. The destination guard
+    ///      runs BEFORE `_spendAllowance`, so against a closed destination this
+    ///      call reverts with `TransferDestinationNotAllowed` and passes for a
+    ///      reason that has nothing to do with authority — the allowance check
+    ///      would never be reached, and a contract that had dropped it entirely
+    ///      would still go green. Opening the destination removes the allowlist
+    ///      as an explanation and leaves the allowance as the only thing
+    ///      refusing the call.
+    function testFuzz_TransferFrom_ArbitraryCallerCannotMoveAnotherHoldersTokens(address attacker, uint96 amount)
+        public
+    {
+        vm.assume(attacker != alice && attacker != address(0));
+        // 1, not 0: a zero-value spend sits within a zero allowance and succeeds.
+        uint256 value = bound(uint256(amount), 1, INITIAL_MINT);
+
+        _allow(attacker);
+        assertEq(token.allowance(alice, attacker), 0, "precondition: alice approved nobody");
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, attacker, 0, value));
+        token.transferFrom(alice, attacker, value);
+
+        assertEq(token.balanceOf(alice), INITIAL_MINT, "alice keeps every token");
+        assertEq(token.balanceOf(attacker), 0, "and the caller gains none");
+    }
+
+    /// @dev An approval is keyed by (owner, spender), and the mutant this kills
+    ///      is a check that treats it as keyed by the owner alone: `dave` moving
+    ///      value on the strength of an allowance `alice` granted to `carol`. The
+    ///      destination is `bob`, already open, so the allowlist is not what
+    ///      refuses this either — and the amount is exactly the one `carol` was
+    ///      approved for, so no size check can be the explanation.
+    function test_TransferFrom_AnAllowanceAuthorizesOnlyTheSpenderItNames() public {
+        // Local rather than a sixth field on the fixture: one file needs a fourth
+        // unprivileged address, so it stays here until a second one does.
+        address dave = makeAddr("dave");
+
+        vm.prank(alice);
+        token.approve(carol, 300 ether);
+
+        vm.prank(dave);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, dave, 0, 300 ether));
+        token.transferFrom(alice, bob, 300 ether);
+
+        assertEq(token.balanceOf(bob), 0, "no value moved");
+        assertEq(token.balanceOf(alice), INITIAL_MINT);
+        assertEq(token.allowance(alice, carol), 300 ether, "and carol's approval is untouched by the attempt");
     }
 
     // ---------- fuzz ----------
