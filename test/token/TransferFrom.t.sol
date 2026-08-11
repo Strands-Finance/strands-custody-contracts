@@ -157,6 +157,61 @@ contract TransferFromTest is BaseTest {
         assertEq(token.balanceOf(bob), 0);
     }
 
+    /// @dev The theft shape, stated for an ARBITRARY caller rather than `carol`,
+    ///      and with the value routed to the caller THEMSELVES rather than to a
+    ///      third party — the two things
+    ///      `test_TransferFrom_WithoutAllowance_Reverts` above holds fixed.
+    ///
+    ///      `attacker` is OPENED as a destination first, and that is the whole
+    ///      point of the test rather than a detail of it. The destination guard
+    ///      runs BEFORE `_spendAllowance`, so against a closed destination this
+    ///      call reverts with `TransferDestinationNotAllowed` and passes for a
+    ///      reason that has nothing to do with authority — the allowance check
+    ///      would never be reached, and a contract that had dropped it entirely
+    ///      would still go green. Opening the destination removes the allowlist
+    ///      as an explanation and leaves the allowance as the only thing
+    ///      refusing the call.
+    function testFuzz_TransferFrom_ArbitraryCallerCannotMoveAnotherHoldersTokens(address attacker, uint96 amount)
+        public
+    {
+        vm.assume(attacker != alice && attacker != address(0));
+        // 1, not 0: a zero-value spend sits within a zero allowance and succeeds.
+        uint256 value = bound(uint256(amount), 1, INITIAL_MINT);
+
+        _allow(attacker);
+        assertEq(token.allowance(alice, attacker), 0, "precondition: alice approved nobody");
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, attacker, 0, value));
+        token.transferFrom(alice, attacker, value);
+
+        assertEq(token.balanceOf(alice), INITIAL_MINT, "alice keeps every token");
+        assertEq(token.balanceOf(attacker), 0, "and the caller gains none");
+    }
+
+    /// @dev An approval is keyed by (owner, spender), and the mutant this kills
+    ///      is a check that treats it as keyed by the owner alone: `dave` moving
+    ///      value on the strength of an allowance `alice` granted to `carol`. The
+    ///      destination is `bob`, already open, so the allowlist is not what
+    ///      refuses this either — and the amount is exactly the one `carol` was
+    ///      approved for, so no size check can be the explanation.
+    function test_TransferFrom_AnAllowanceAuthorizesOnlyTheSpenderItNames() public {
+        // Local rather than a sixth field on the fixture: one file needs a fourth
+        // unprivileged address, so it stays here until a second one does.
+        address dave = makeAddr("dave");
+
+        vm.prank(alice);
+        token.approve(carol, 300 ether);
+
+        vm.prank(dave);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, dave, 0, 300 ether));
+        token.transferFrom(alice, bob, 300 ether);
+
+        assertEq(token.balanceOf(bob), 0, "no value moved");
+        assertEq(token.balanceOf(alice), INITIAL_MINT);
+        assertEq(token.allowance(alice, carol), 300 ether, "and carol's approval is untouched by the attempt");
+    }
+
     // ---------- fuzz ----------
 
     /// @dev Any spend within both the allowance and the balance goes through,
