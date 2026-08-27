@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { Script, console2 } from "forge-std/Script.sol";
-import { StrandsCustodyToken } from "../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../src/StrandsDACAP.sol";
 
 contract Deploy is Script {
-    function run() external returns (StrandsCustodyToken token) {
+    function run() external returns (StrandsDACAP token) {
         address admin = vm.envAddress("ADMIN_ADDRESS");
         uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
         // Native decimals of the custodied asset (e.g. USDC=6, BTC=8, ETH=18). Defaults to 18.
@@ -22,14 +22,14 @@ contract Deploy is Script {
         address minter = vm.envOr("MINTER_ADDRESS", admin);
 
         vm.startBroadcast(pk);
-        token = new StrandsCustodyToken(decimals_, name_, symbol_);
+        token = new StrandsDACAP(decimals_, name_, symbol_);
         // Same broadcast as the deploy: a token left uninitialized is inert, and the deployer key is the only
         // address that can finish it. Splitting these across runs turns a dropped second transaction into an
         // operator problem for no benefit.
         token.initialize(admin, minter);
         vm.stopBroadcast();
 
-        console2.log("StrandsCustodyToken deployed at:", address(token));
+        console2.log("StrandsDACAP deployed at:", address(token));
         console2.log("Admin:", admin);
         console2.log("Minter:", minter);
         console2.log("Decimals:", decimals_);

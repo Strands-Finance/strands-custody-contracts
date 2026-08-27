@@ -1,27 +1,27 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
 
 /// @notice Destruction of supply is PRIVILEGED, and the privilege is NOT split:
-///         all four burn entrypoints — `adminBurn`, `guardBurn` and the
-///         inherited `burn` / `burnFrom` — are MINTER_ROLE. That is what this
-///         suite owns. `AdminBurn.t.sol` and `GuardBurn.t.sol` own the mechanics
-///         of the two Strands-specific paths; here the subject is who may reach
-///         any of them.
+///         both burn entrypoints — `adminRetract` and `guardRetract` — are
+///         OPERATOR_ROLE. That is what this suite owns. `AdminBurn.t.sol` and
+///         `GuardBurn.t.sol` own the mechanics of the two paths; here the
+///         subject is who may reach either of them.
 ///
 ///         What holds for every holder is that they can do nothing. They have
 ///         exactly one capability — moving their balance. They cannot destroy
 ///         it, and they cannot delegate that power to anyone else via an ERC20
-///         allowance.
+///         allowance: no burn path reads an allowance at all.
 ///
 /// @dev    A balance here is a claim against an off-chain ledger. A holder who
-///         can burn unilaterally desyncs that ledger, which is the whole reason
-///         `adminBurn` exists — and the reason the `burn` / `burnFrom` that
-///         OZ's `ERC20Burnable` hands every holder had to be gated rather than
-///         left silently reachable.
+///         can burn unilaterally desyncs that ledger. The contract no longer
+///         inherits `ERC20Burnable`, so there is no holder-reachable `burn` /
+///         `burnFrom` to gate — the only burn paths are the two written here,
+///         and both are role-checked. `ExternalUserSurface.t.sol` pins that the
+///         inherited surface stays gone.
 ///
-///         One operating role means `revokeRole(MINTER_ROLE, ...)` is the single
+///         One operating role means `revokeRole(OPERATOR_ROLE, ...)` is the single
 ///         lever that stops minting AND burning; there is no burn-only revoke.
 ///         `Roles.t.sol:test_RevokedMinter_LosesEveryBurnAndMintPathImmediately`
 ///         is where that is asserted rather than left to be discovered.
@@ -33,38 +33,25 @@ contract BurnAuthorityTest is BaseTest {
     function test_Holder_CannotBurnOwnBalance() public {
         vm.prank(alice);
         _expectNotMinter(alice);
-        token.burn(100 ether);
+        token.adminRetract(alice, 100 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT, "holder balance must be untouched");
         assertEq(token.totalSupply(), INITIAL_MINT, "supply must not move without the minter");
     }
 
-    /// @dev An allowance must not launder the burn. Ungated, `approve` +
-    ///      `burnFrom` destroys a holder's balance with no privileged party
-    ///      involved, so any address a user approves could wipe them out.
-    function test_Holder_CannotBurnFromEvenWithAllowance() public {
+    /// @dev An allowance must not launder the burn: no burn path consults an
+    ///      allowance, so an approved spender is refused exactly like a
+    ///      stranger — and the allowance survives the rejection intact.
+    function test_ApprovedSpender_CannotBurn() public {
         vm.prank(alice);
         token.approve(bob, 200 ether);
 
         vm.prank(bob);
         _expectNotMinter(bob);
-        token.burnFrom(alice, 200 ether);
+        token.adminRetract(alice, 200 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT, "an allowance must not destroy value");
         assertEq(token.allowance(alice, bob), 200 ether, "rejected burn must not consume allowance");
-        assertEq(token.totalSupply(), INITIAL_MINT);
-    }
-
-    /// @dev The counterpart with NO allowance at all. Previously asserted with a
-    ///      bare `vm.expectRevert()`. That would keep passing once burning is
-    ///      gated, but for the wrong reason — catching the role rejection while
-    ///      claiming to prove an allowance is required. Pinning the exact error
-    ///      keeps the two causes distinguishable.
-    function test_BurnFrom_RejectsNonMinterRegardlessOfAllowance() public {
-        vm.prank(bob);
-        _expectNotMinter(bob);
-        token.burnFrom(alice, 1);
-
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
@@ -80,7 +67,7 @@ contract BurnAuthorityTest is BaseTest {
 
         vm.prank(bob);
         _expectNotMinter(bob);
-        token.burn(300 ether);
+        token.adminRetract(bob, 300 ether);
 
         assertEq(token.balanceOf(bob), 300 ether, "recipient balance must be untouched");
         assertEq(token.totalSupply(), INITIAL_MINT);
@@ -88,33 +75,29 @@ contract BurnAuthorityTest is BaseTest {
 
     /// @dev The admin is the sharpest case, and the one property the single-role
     ///      collapse was chosen to preserve. DEFAULT_ADMIN_ROLE is the role admin
-    ///      for MINTER_ROLE, so it CAN reach every burn path — but only by first
+    ///      for OPERATOR_ROLE, so it CAN reach every burn path — but only by first
     ///      granting itself the role, and that grant is visible on-chain as
     ///      `RoleGranted`. Until it does, it is refused like any other holder.
     function test_Admin_ReachesBurningOnlyViaAVisibleSelfGrant() public {
         vm.prank(minter);
-        token.mint(admin, 100 ether);
+        token.encode(admin, 100 ether);
 
-        // Before the grant: refused on all four paths.
+        // Before the grant: refused on both paths.
         vm.startPrank(admin);
         _expectNotMinter(admin);
-        token.burn(10 ether);
+        token.adminRetract(alice, 10 ether);
         _expectNotMinter(admin);
-        token.burnFrom(alice, 10 ether);
-        _expectNotMinter(admin);
-        token.adminBurn(alice, 10 ether);
-        _expectNotMinter(admin);
-        token.guardBurn(alice, 10 ether, INITIAL_MINT + 100 ether);
+        token.guardRetract(alice, 10 ether, INITIAL_MINT + 100 ether);
         vm.stopPrank();
 
         assertEq(token.totalSupply(), INITIAL_MINT + 100 ether, "the admin holds no operating power of its own");
 
         // The grant announces itself, and only then does the burn land.
         vm.prank(admin);
-        token.grantRole(MINTER_ROLE, admin);
+        token.grantRole(OPERATOR_ROLE, admin);
 
         vm.prank(admin);
-        token.burn(10 ether);
+        token.adminRetract(admin, 10 ether);
 
         assertEq(token.totalSupply(), INITIAL_MINT + 90 ether, "the escalation works, but never silently");
     }
@@ -127,17 +110,16 @@ contract BurnAuthorityTest is BaseTest {
         vm.prank(alice);
         token.approve(minter, 100 ether);
         vm.prank(minter);
-        token.mint(minter, 100 ether);
+        token.encode(minter, 100 ether);
 
         vm.startPrank(minter);
-        token.burn(10 ether);
-        token.burnFrom(alice, 10 ether);
-        token.adminBurn(alice, 10 ether);
-        token.guardBurn(alice, 10 ether, INITIAL_MINT + 70 ether);
+        token.adminRetract(minter, 10 ether);
+        token.adminRetract(alice, 10 ether);
+        token.guardRetract(alice, 10 ether, INITIAL_MINT + 80 ether);
         vm.stopPrank();
 
-        assertEq(token.totalSupply(), INITIAL_MINT + 60 ether, "100 minted, 40 destroyed across four paths");
-        assertEq(token.allowance(alice, minter), 90 ether, "only burnFrom spends allowance; the other three do not");
+        assertEq(token.totalSupply(), INITIAL_MINT + 70 ether, "100 minted, 30 destroyed across both paths");
+        assertEq(token.allowance(alice, minter), 100 ether, "no burn path spends an allowance");
     }
 
     /// @dev Every rejected path must unwind completely — no partial burn, no
@@ -150,11 +132,11 @@ contract BurnAuthorityTest is BaseTest {
 
         vm.prank(alice);
         _expectNotMinter(alice);
-        token.burn(1 ether);
+        token.adminRetract(alice, 1 ether);
 
         vm.prank(carol);
         _expectNotMinter(carol);
-        token.burnFrom(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT);
         assertEq(token.balanceOf(carol), 0);
@@ -169,66 +151,52 @@ contract BurnAuthorityTest is BaseTest {
 
         vm.prank(alice);
         _expectNotMinter(alice);
-        token.burn(value);
+        token.adminRetract(alice, value);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "no amount is small enough to slip through");
     }
 
     // ---------- positive controls: burning must keep working ----------
 
-    function test_Minter_CanBurn() public {
+    function test_Minter_CanBurnOwnBalance() public {
         vm.prank(minter);
-        token.mint(minter, 100 ether);
+        token.encode(minter, 100 ether);
 
         vm.prank(minter);
-        token.burn(40 ether);
+        token.adminRetract(minter, 40 ether);
 
         assertEq(token.balanceOf(minter), 60 ether);
         assertEq(token.totalSupply(), INITIAL_MINT + 60 ether);
     }
 
-    function test_Minter_CanBurnFromWithAllowance() public {
-        vm.prank(alice);
-        token.approve(minter, 200 ether);
-
+    function test_Minter_CanBurnWithoutAllowance() public {
         vm.prank(minter);
-        token.burnFrom(alice, 200 ether);
+        token.adminRetract(alice, 200 ether);
 
         assertEq(token.balanceOf(alice), 800 ether);
-        assertEq(token.allowance(alice, minter), 0, "burnFrom still spends the allowance");
         assertEq(token.totalSupply(), 800 ether);
     }
 
-    // ---------- observability: one event covers all four paths ----------
+    // ---------- observability: one event covers both paths ----------
 
-    /// @dev Four burn entrypoints are only safe if a reconciler can see all of
+    /// @dev Two burn entrypoints are only safe if a reconciler can see both of
     ///      them from ONE subscription. This is the invariant the contract asks
-    ///      it to rely on — "every burn emits {Burned}" — and it is asserted
+    ///      it to rely on — "every burn emits {Retracted}" — and it is asserted
     ///      path by path rather than argued, because an entrypoint that forgot
     ///      the event would still pass every balance and supply assertion in
     ///      this file.
-    function test_EveryBurnPath_EmitsBurned() public {
+    function test_EveryBurnPath_EmitsRetracted() public {
         vm.prank(minter);
-        token.mint(minter, 100 ether);
-        vm.prank(alice);
-        token.approve(minter, 10 ether);
+        token.encode(minter, 100 ether);
 
         _expectBurnedEvent(minter, minter, 40 ether);
         vm.prank(minter);
-        token.burn(40 ether);
-
-        _expectBurnedEvent(minter, alice, 10 ether);
-        vm.prank(minter);
-        token.burnFrom(alice, 10 ether);
+        token.adminRetract(minter, 40 ether);
 
         _expectBurnedEvent(minter, alice, 5 ether);
         vm.prank(minter);
-        token.adminBurn(alice, 5 ether);
+        token.guardRetract(alice, 5 ether, INITIAL_MINT + 60 ether);
 
-        _expectBurnedEvent(minter, alice, 5 ether);
-        vm.prank(minter);
-        token.guardBurn(alice, 5 ether, INITIAL_MINT + 45 ether);
-
-        assertEq(token.totalSupply(), INITIAL_MINT + 40 ether, "100 minted, 60 destroyed across four paths");
+        assertEq(token.totalSupply(), INITIAL_MINT + 55 ether, "100 minted, 45 destroyed across both paths");
     }
 }

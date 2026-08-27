@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "./Base.t.sol";
@@ -13,7 +13,7 @@ contract IntegrationTest is BaseTest {
     function test_HappyPath_MintTransferBurn() public {
         // Baseline that setUp established: token deployed, roles seated, alice funded.
         assertTrue(token.initialized());
-        assertTrue(token.hasRole(MINTER_ROLE, minter));
+        assertTrue(token.hasRole(OPERATOR_ROLE, minter));
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertEq(token.balanceOf(alice), INITIAL_MINT);
         assertEq(token.totalSupply(), INITIAL_MINT);
@@ -21,7 +21,7 @@ contract IntegrationTest is BaseTest {
         // Mint: top alice up further.
         uint256 topUp = 500 ether;
         vm.prank(minter);
-        token.mint(alice, topUp);
+        token.encode(alice, topUp);
         assertEq(token.balanceOf(alice), INITIAL_MINT + topUp);
         assertEq(token.totalSupply(), INITIAL_MINT + topUp);
 
@@ -38,7 +38,7 @@ contract IntegrationTest is BaseTest {
         uint256 supplyBefore = token.totalSupply();
         _expectBurnedEvent(minter, bob, sent);
         vm.prank(minter);
-        token.adminBurn(bob, sent);
+        token.adminRetract(bob, sent);
         assertEq(token.balanceOf(bob), 0);
         assertEq(token.totalSupply(), supplyBefore - sent);
     }
@@ -48,20 +48,20 @@ contract IntegrationTest is BaseTest {
     function test_Unhappy_NonMinterCannotMint() public {
         vm.prank(alice);
         _expectNotMinter(alice);
-        token.mint(alice, 1 ether);
+        token.encode(alice, 1 ether);
     }
 
     function test_Unhappy_AdminCannotMint() public {
         // The admin owns the role graph but no supply authority.
         vm.prank(admin);
         _expectNotMinter(admin);
-        token.mint(alice, 1 ether);
+        token.encode(alice, 1 ether);
     }
 
     function test_Unhappy_NonMinterCannotBurn() public {
         vm.prank(alice);
         _expectNotMinter(alice);
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
     }
 
     function test_Unhappy_TransferToDisallowedDestinationReverts() public {

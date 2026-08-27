@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { GuardMintBase } from "./GuardMintBase.t.sol";
@@ -17,18 +17,18 @@ contract GuardMintSequenceTest is GuardMintBase {
         uint256 start = token.totalSupply();
 
         vm.prank(minter);
-        token.guardMint(bob, 300 ether, start);
+        token.guardEncode(bob, 300 ether, start);
 
         vm.prank(minter);
-        token.adminBurn(bob, 300 ether);
+        token.adminRetract(bob, 300 ether);
         assertEq(token.totalSupply(), start, "precondition: the round trip is closed");
 
         vm.prank(minter);
         _expectSupplyMismatch(start, start + 300 ether);
-        token.guardMint(bob, 50 ether, start + 300 ether);
+        token.guardEncode(bob, 50 ether, start + 300 ether);
 
         vm.prank(minter);
-        token.guardMint(bob, 50 ether, start);
+        token.guardEncode(bob, 50 ether, start);
         assertEq(token.totalSupply(), start + 50 ether, "the pre-excursion estimate is correct again");
     }
 
@@ -46,7 +46,7 @@ contract GuardMintSequenceTest is GuardMintBase {
             if (burning) {
                 uint256 amount = bound(draw >> 1, 1, token.balanceOf(alice));
                 vm.prank(minter);
-                token.adminBurn(alice, amount);
+                token.adminRetract(alice, amount);
                 supply -= amount;
             } else {
                 uint256 amount = bound(draw >> 1, 0, 1_000 ether);
@@ -55,11 +55,11 @@ contract GuardMintSequenceTest is GuardMintBase {
                 if (supply != 0) {
                     vm.prank(minter);
                     _expectSupplyMismatch(supply, supply - 1);
-                    token.guardMint(alice, amount, supply - 1);
+                    token.guardEncode(alice, amount, supply - 1);
                 }
 
                 vm.prank(minter);
-                token.guardMint(alice, amount, supply);
+                token.guardEncode(alice, amount, supply);
                 supply += amount;
             }
 

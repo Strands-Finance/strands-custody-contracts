@@ -2,14 +2,12 @@
 pragma solidity ^0.8.24;
 
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import { ERC20Burnable } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 
 /// @title Strands Digital Asset Custodial Account Proxy
-contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferAllowlist {
-
+contract StrandsDACAP is ERC20, AccessControl, Initializable, ITransferAllowlist {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
     uint8 private immutable _decimals;
@@ -59,22 +57,12 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
         uint256 actual = totalSupply();
         if (actual != estimatedSupply) revert SupplyMismatch(actual, estimatedSupply);
         _burn(from, amount);
-        emit Burned(msg.sender, from, amount);
+        emit Retracted(msg.sender, from, amount);
     }
 
     function adminRetract(address from, uint256 amount) external onlyRole(OPERATOR_ROLE) {
         _burn(from, amount);
-        emit Burned(msg.sender, from, amount);
-    }
-
-    function retract(uint256 amount) public override onlyRole(OPERATOR_ROLE) {
-        super.burn(amount);
-        emit Burned(msg.sender, msg.sender, amount);
-    }
-
-    function retractFrom(address from, uint256 amount) public override onlyRole(OPERATOR_ROLE) {
-        super.burnFrom(from, amount);
-        emit Burned(msg.sender, from, amount);
+        emit Retracted(msg.sender, from, amount);
     }
 
     function setDestinationAllowed(address destination, bool allowed) external override onlyRole(DEFAULT_ADMIN_ROLE) {

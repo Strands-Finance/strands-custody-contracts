@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { GuardMintBase } from "./GuardMintBase.t.sol";
-import { StrandsCustodyToken } from "../../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../../src/StrandsDACAP.sol";
 
 /// @notice None of the claims the other files in this folder make depends on `decimals()`.
 /// @dev    Every other suite here runs on the 18-dp fixture, and `Metadata.t.sol` only checks that `decimals()`
@@ -28,7 +28,7 @@ contract GuardMintDecimalsTest is GuardMintBase {
     ///      the same numbers at 6, 8 and 18. `amount` is deliberately not a whole number of display units at any
     ///      magnitude, so a scaling fault cannot coincidentally land on the right answer.
     function _assertGuardMintInvariantsAt(uint8 decimals_) private {
-        StrandsCustodyToken t = _deployWithDecimals(decimals_);
+        StrandsDACAP t = _deployWithDecimals(decimals_);
         assertEq(t.decimals(), decimals_, "precondition: the token reports the magnitude under test");
         assertEq(t.totalSupply(), 0, "precondition: a fresh token has no supply");
 
@@ -36,14 +36,14 @@ contract GuardMintDecimalsTest is GuardMintBase {
 
         // 1. Fresh token: the estimate is definitionally zero, and the raw amount lands whatever decimals() says.
         vm.prank(minter);
-        t.guardMint(bob, amount, 0);
+        t.guardEncode(bob, amount, 0);
         assertEq(t.totalSupply(), amount, "a first mint lands the raw amount");
         assertEq(t.balanceOf(bob), amount);
 
         // 2. A NON-ZERO estimate must be the raw supply. This is the step with teeth — see the note above: step 1
         //    alone passes under a decimals-scaled comparison because zero survives any division.
         vm.prank(minter);
-        t.guardMint(bob, amount, amount);
+        t.guardEncode(bob, amount, amount);
         assertEq(t.totalSupply(), 2 * amount, "a matching raw estimate mints");
         assertEq(t.balanceOf(bob), 2 * amount);
 
@@ -51,7 +51,7 @@ contract GuardMintDecimalsTest is GuardMintBase {
         //    is the diagnosis an operator reads, so a scaled `actual` would misreport the chain's own state.
         vm.prank(minter);
         _expectSupplyMismatch(2 * amount, amount);
-        t.guardMint(bob, amount, amount);
+        t.guardEncode(bob, amount, amount);
         assertEq(t.totalSupply(), 2 * amount, "a refused mint must not move supply");
         assertEq(t.balanceOf(bob), 2 * amount, "nor credit the recipient");
 
@@ -62,17 +62,17 @@ contract GuardMintDecimalsTest is GuardMintBase {
             uint256 displayUnits = (2 * amount) / (10 ** decimals_);
             vm.prank(minter);
             _expectSupplyMismatch(2 * amount, displayUnits);
-            t.guardMint(bob, amount, displayUnits);
+            t.guardEncode(bob, amount, displayUnits);
         }
 
         // 5. The guard tracks whatever moved supply, not just mints: after a burn the estimate must be the NEW
         //    raw supply. Pairs the guard with the unguarded burn path at every magnitude.
         vm.prank(minter);
-        t.adminBurn(bob, amount);
+        t.adminRetract(bob, amount);
         assertEq(t.totalSupply(), amount, "the burn removes exactly the raw amount");
 
         vm.prank(minter);
-        t.guardMint(bob, amount, amount);
+        t.guardEncode(bob, amount, amount);
         assertEq(t.totalSupply(), 2 * amount, "the post-burn supply is the estimate the guard now expects");
     }
 
@@ -99,14 +99,14 @@ contract GuardMintDecimalsTest is GuardMintBase {
     ///      pass 5 where the chain holds 5_000_000. The comparison is raw base units, so that must revert rather
     ///      than read as "5 USDC, close enough" — the estimate carries no scale of its own to reconcile.
     function test_GuardMint_6dp_RejectsADecimalAdjustedEstimate() public {
-        StrandsCustodyToken usdc = _deployWithDecimals(6);
+        StrandsDACAP usdc = _deployWithDecimals(6);
         vm.prank(minter);
-        usdc.guardMint(alice, 5 * ONE_USDC, 0);
+        usdc.guardEncode(alice, 5 * ONE_USDC, 0);
         assertEq(usdc.totalSupply(), 5 * ONE_USDC, "precondition: five whole USDC, i.e. 5_000_000 base units");
 
         vm.prank(minter);
         _expectSupplyMismatch(5 * ONE_USDC, 5);
-        usdc.guardMint(bob, ONE_USDC, 5);
+        usdc.guardEncode(bob, ONE_USDC, 5);
 
         assertEq(usdc.totalSupply(), 5 * ONE_USDC, "a decimal-adjusted estimate must not be honoured");
     }
@@ -117,15 +117,15 @@ contract GuardMintDecimalsTest is GuardMintBase {
     ///      non-zero, and a comparison scaled by decimals() would divide that estimate to a different number and
     ///      revert. A single mint from zero cannot detect the fault, because zero survives any division.
     function test_GuardMint_DecimalsDoNotAffectSupplyArithmetic() public {
-        StrandsCustodyToken sixDp = _deployWithDecimals(6);
-        StrandsCustodyToken eighteenDp = _deployWithDecimals(18);
+        StrandsDACAP sixDp = _deployWithDecimals(6);
+        StrandsDACAP eighteenDp = _deployWithDecimals(18);
         uint256 amount = 123_456_789;
 
         vm.startPrank(minter);
-        sixDp.guardMint(bob, amount, 0);
-        eighteenDp.guardMint(bob, amount, 0);
-        sixDp.guardMint(bob, amount, amount);
-        eighteenDp.guardMint(bob, amount, amount);
+        sixDp.guardEncode(bob, amount, 0);
+        eighteenDp.guardEncode(bob, amount, 0);
+        sixDp.guardEncode(bob, amount, amount);
+        eighteenDp.guardEncode(bob, amount, amount);
         vm.stopPrank();
 
         assertEq(sixDp.totalSupply(), eighteenDp.totalSupply(), "decimals() must not scale totalSupply");

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
@@ -97,8 +97,8 @@ contract TransferTest is BaseTest {
     ///      `bob` is open, and that is the whole permission any of them needs.
     function test_PrivilegedRoles_TransferLikeAnyOtherHolder() public {
         vm.startPrank(minter);
-        token.mint(admin, 10 ether);
-        token.mint(minter, 10 ether);
+        token.encode(admin, 10 ether);
+        token.encode(minter, 10 ether);
         vm.stopPrank();
 
         vm.prank(admin);
@@ -121,7 +121,7 @@ contract TransferTest is BaseTest {
         token.transfer(bob, 1_001 ether);
     }
 
-    /// @dev Transfer is not a burn path. Burning is MINTER_ROLE-only, so
+    /// @dev Transfer is not a burn path. Burning is OPERATOR_ROLE-only, so
     ///      reaching `address(0)` through `transfer` would be a way around that
     ///      gate. It is now refused twice over: `address(0)` is on no allowlist,
     ///      so the guard answers first and OZ's own `ERC20InvalidReceiver` never
@@ -208,8 +208,9 @@ contract TransferTest is BaseTest {
     ///      leave that test green.
     function test_AllowlistSelectors_HaveADispatchEntry() public {
         vm.prank(admin);
-        (bool wrote,) = address(token)
-            .call(abi.encodeWithSelector(bytes4(keccak256("setDestinationAllowed(address,bool)")), carol, true));
+        (bool wrote,) = address(token).call(
+            abi.encodeWithSelector(bytes4(keccak256("setDestinationAllowed(address,bool)")), carol, true)
+        );
         assertTrue(wrote, "the setter must be dispatchable");
 
         (bool read, bytes memory data) =

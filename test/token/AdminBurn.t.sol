@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice `adminBurn` — the privileged, UNGUARDED burn that destroys a holder's
+/// @notice `adminRetract` — the privileged, UNGUARDED burn that destroys a holder's
 ///         balance without consuming ERC20 allowance. The operator's manual
 ///         escape hatch for keeping total supply consistent with the off-chain
-///         ledger; the backend's own redemption path is `guardBurn`, which takes
+///         ledger; the backend's own redemption path is `guardRetract`, which takes
 ///         a supply estimate this one deliberately does not.
 contract AdminBurnTest is BaseTest {
     function test_Minter_CanBurnFromAnyHolder_WithoutAllowance() public {
@@ -17,7 +17,7 @@ contract AdminBurnTest is BaseTest {
         _expectBurnedEvent(minter, alice, 400 ether);
 
         vm.prank(minter);
-        token.adminBurn(alice, 400 ether);
+        token.adminRetract(alice, 400 ether);
 
         assertEq(token.balanceOf(alice), 600 ether);
         assertEq(token.totalSupply(), 600 ether);
@@ -26,7 +26,7 @@ contract AdminBurnTest is BaseTest {
     function test_NonMinter_CannotAdminBurn() public {
         vm.prank(bob);
         _expectNotMinter(bob);
-        token.adminBurn(alice, 1);
+        token.adminRetract(alice, 1);
     }
 
     function test_AdminBurn_RevertsOnInsufficientBalance() public {
@@ -34,13 +34,13 @@ contract AdminBurnTest is BaseTest {
         vm.expectRevert(
             abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, alice, INITIAL_MINT, 1_001 ether)
         );
-        token.adminBurn(alice, 1_001 ether);
+        token.adminRetract(alice, 1_001 ether);
     }
 
     function testFuzz_AdminBurn_BurnsExactAmount(uint96 amount) public {
         amount = uint96(bound(amount, 0, INITIAL_MINT));
         vm.prank(minter);
-        token.adminBurn(alice, amount);
+        token.adminRetract(alice, amount);
         assertEq(token.balanceOf(alice), INITIAL_MINT - amount);
         assertEq(token.totalSupply(), INITIAL_MINT - amount);
     }
@@ -61,10 +61,10 @@ contract AdminBurnTest is BaseTest {
         token.approve(minter, 1);
 
         vm.prank(minter);
-        token.adminBurn(alice, INITIAL_MINT);
+        token.adminRetract(alice, INITIAL_MINT);
 
         assertEq(token.balanceOf(alice), 0, "a 1 wei allowance must not cap the burn");
-        assertEq(token.allowance(alice, minter), 1, "adminBurn must not spend the allowance");
+        assertEq(token.allowance(alice, minter), 1, "adminRetract must not spend the allowance");
         assertEq(token.totalSupply(), 0);
     }
 
@@ -77,7 +77,7 @@ contract AdminBurnTest is BaseTest {
         token.approve(bob, type(uint256).max);
 
         vm.prank(minter);
-        token.adminBurn(alice, 400 ether);
+        token.adminRetract(alice, 400 ether);
 
         assertEq(token.balanceOf(alice), 600 ether, "an approval to bob must not reserve alice's balance");
         assertEq(token.allowance(alice, bob), type(uint256).max, "the third party's allowance is untouched");
@@ -98,7 +98,7 @@ contract AdminBurnTest is BaseTest {
         _expectBurnedEvent(minter, alice, 400 ether);
 
         vm.prank(minter);
-        token.adminBurn(alice, 400 ether);
+        token.adminRetract(alice, 400 ether);
 
         assertEq(token.allowance(alice, minter), 400 ether, "an exact allowance must survive unspent");
         assertEq(token.balanceOf(alice), 600 ether);
@@ -118,7 +118,7 @@ contract AdminBurnTest is BaseTest {
         vm.expectRevert(
             abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, alice, INITIAL_MINT, 1_001 ether)
         );
-        token.adminBurn(alice, 1_001 ether);
+        token.adminRetract(alice, 1_001 ether);
 
         assertEq(token.allowance(alice, minter), 1 ether, "a rejected burn must not consume the allowance");
         assertEq(token.totalSupply(), INITIAL_MINT);
@@ -135,7 +135,7 @@ contract AdminBurnTest is BaseTest {
         token.approve(minter, allowed);
 
         vm.prank(minter);
-        token.adminBurn(alice, value);
+        token.adminRetract(alice, value);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT - value);
         assertEq(token.allowance(alice, minter), allowed, "allowance survives intact whatever its size");
@@ -155,30 +155,30 @@ contract AdminBurnTest is BaseTest {
 
         vm.prank(bob);
         _expectNotMinter(bob);
-        token.adminBurn(alice, 400 ether);
+        token.adminRetract(alice, 400 ether);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT, "an allowance must not destroy value");
         assertEq(token.allowance(alice, bob), type(uint256).max, "a rejected call must not consume the allowance");
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
-    /// @dev The one thing `adminBurn` does NOT do, stated where someone choosing
-    ///      between the two burn entrypoints will look. `guardBurn` refuses a burn
-    ///      whose `estimatedSupply` no longer matches the chain; `adminBurn` takes
+    /// @dev The one thing `adminRetract` does NOT do, stated where someone choosing
+    ///      between the two burn entrypoints will look. `guardRetract` refuses a burn
+    ///      whose `estimatedSupply` no longer matches the chain; `adminRetract` takes
     ///      no estimate and cannot refuse anything, which is exactly why the
     ///      backend sends the guarded one and leaves this to an operator.
     function test_AdminBurn_IsUnguarded_AndBurnsAgainstAnySupply() public {
         uint256 supplyBefore = token.totalSupply();
 
-        // A guardBurn priced off a supply that is one wei out is refused...
+        // A guardRetract priced off a supply that is one wei out is refused...
         vm.prank(minter);
         _expectSupplyMismatch(supplyBefore, supplyBefore + 1);
-        token.guardBurn(alice, 1 ether, supplyBefore + 1);
+        token.guardRetract(alice, 1 ether, supplyBefore + 1);
         assertEq(token.totalSupply(), supplyBefore, "the guarded path refused it");
 
-        // ...while adminBurn has nothing to compare against and simply burns.
+        // ...while adminRetract has nothing to compare against and simply burns.
         vm.prank(minter);
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
         assertEq(token.totalSupply(), supplyBefore - 1 ether, "the unguarded path cannot refuse a stale decision");
     }
 }

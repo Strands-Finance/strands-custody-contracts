@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { ITransferAllowlist } from "../../src/interfaces/ITransferAllowlist.sol";
@@ -16,7 +16,7 @@ import { BaseTest } from "../Base.t.sol";
 ///         Nothing here covers the mint / burn exemption, because the suites
 ///         that already own those paths cover it for free: `Mint.t.sol`,
 ///         `AdminBurn.t.sol`, `GuardBurn.t.sol`, `BurnAuthority.t.sol` and the
-///         whole `guardMint` tree run against the untouched fixture, whose
+///         whole `guardEncode` tree run against the untouched fixture, whose
 ///         allowlist is empty. A guard that leaked into issuance or redemption
 ///         turns all of them red.
 contract AllowlistTest is BaseTest {
@@ -127,7 +127,7 @@ contract AllowlistTest is BaseTest {
     /// @dev The gate. `minter` is in the list because the operating role must
     ///      not be a shortcut into the writer — the whole restriction is worth
     ///      nothing if holding it lets you open your own destination. It is the
-    ///      one that matters most now that MINTER_ROLE is the token's ONLY hot
+    ///      one that matters most now that OPERATOR_ROLE is the token's ONLY hot
     ///      capability, and so the role an operator's live key actually holds.
     ///      `alice` is a funded holder and `carol` an address with no standing
     ///      at all, so the three between them span every non-admin caller.

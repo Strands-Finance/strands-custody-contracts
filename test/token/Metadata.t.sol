@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 
 /// @notice ERC20 metadata: name, symbol and decimals, all three fixed at deploy time.
 ///
@@ -17,17 +17,17 @@ contract MetadataTest is BaseTest {
     }
 
     function test_Decimals_AreSetByConstructor() public {
-        assertEq(new StrandsCustodyToken(6, NAME, SYMBOL).decimals(), 6, "usdc");
-        assertEq(new StrandsCustodyToken(8, NAME, SYMBOL).decimals(), 8, "btc");
-        assertEq(new StrandsCustodyToken(18, NAME, SYMBOL).decimals(), 18, "eth");
+        assertEq(new StrandsDACAP(6, NAME, SYMBOL).decimals(), 6, "usdc");
+        assertEq(new StrandsDACAP(8, NAME, SYMBOL).decimals(), 8, "btc");
+        assertEq(new StrandsDACAP(18, NAME, SYMBOL).decimals(), 18, "eth");
     }
 
     /// @dev Two tokens, different metadata — the one shape that fails if the strings ever regress to being
     ///      hardcoded in the constructor. Asserting a single token's name against a constant cannot tell a
     ///      constructor argument apart from a literal that happens to match.
     function test_NameAndSymbol_AreSetByConstructor() public {
-        StrandsCustodyToken usdc = new StrandsCustodyToken(6, "Strands Custody USDC (BitGo)", "scUSDC");
-        StrandsCustodyToken weth = new StrandsCustodyToken(18, "Strands Custody WETH (Anchorage)", "scWETH");
+        StrandsDACAP usdc = new StrandsDACAP(6, "Strands Custody USDC (BitGo)", "scUSDC");
+        StrandsDACAP weth = new StrandsDACAP(18, "Strands Custody WETH (Anchorage)", "scWETH");
 
         assertEq(usdc.name(), "Strands Custody USDC (BitGo)");
         assertEq(usdc.symbol(), "scUSDC");
@@ -37,11 +37,11 @@ contract MetadataTest is BaseTest {
 
     function test_Constructor_RevertsOnEmptyName() public {
         vm.expectRevert(bytes("name=0"));
-        new StrandsCustodyToken(18, "", SYMBOL);
+        new StrandsDACAP(18, "", SYMBOL);
     }
 
     function test_Constructor_RevertsOnEmptySymbol() public {
         vm.expectRevert(bytes("symbol=0"));
-        new StrandsCustodyToken(18, NAME, "");
+        new StrandsDACAP(18, NAME, "");
     }
 }

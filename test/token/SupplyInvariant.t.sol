@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { BaseTest } from "../Base.t.sol";
@@ -47,24 +47,24 @@ contract SupplyInvariantTest is BaseTest {
         targetSender(carol);
     }
 
-    /// @dev The property in one line: no address without MINTER_ROLE can change
+    /// @dev The property in one line: no address without OPERATOR_ROLE can change
     ///      how many tokens exist, by any route, in any order.
     function invariant_TotalSupplyIsUnreachableWithoutMinterRole() public view {
         assertEq(token.totalSupply(), INITIAL_MINT, "an unprivileged caller changed the supply");
     }
 
     /// @dev The other half of the same guarantee. Supply could also be reached
-    ///      indirectly — by a stranger acquiring MINTER_ROLE, or by the role's
+    ///      indirectly — by a stranger acquiring OPERATOR_ROLE, or by the role's
     ///      admin being repointed at something they can obtain. Neither may
     ///      happen through any call an ordinary user can make.
     function invariant_TheRoleGraphIsUnreachableWithoutTheAdmin() public view {
-        assertTrue(token.hasRole(MINTER_ROLE, minter), "the seated minter was unseated by a stranger");
+        assertTrue(token.hasRole(OPERATOR_ROLE, minter), "the seated minter was unseated by a stranger");
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin), "the seated admin was unseated by a stranger");
-        assertEq(token.getRoleAdmin(MINTER_ROLE), DEFAULT_ADMIN_ROLE, "MINTER_ROLE's admin was repointed");
+        assertEq(token.getRoleAdmin(OPERATOR_ROLE), DEFAULT_ADMIN_ROLE, "OPERATOR_ROLE's admin was repointed");
 
-        assertFalse(token.hasRole(MINTER_ROLE, alice), "a holder acquired the operating role");
-        assertFalse(token.hasRole(MINTER_ROLE, bob), "a holder acquired the operating role");
-        assertFalse(token.hasRole(MINTER_ROLE, carol), "a holder acquired the operating role");
+        assertFalse(token.hasRole(OPERATOR_ROLE, alice), "a holder acquired the operating role");
+        assertFalse(token.hasRole(OPERATOR_ROLE, bob), "a holder acquired the operating role");
+        assertFalse(token.hasRole(OPERATOR_ROLE, carol), "a holder acquired the operating role");
     }
 
     /// @dev The admin's OTHER standing power, held to the same standard. The

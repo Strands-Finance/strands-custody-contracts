@@ -1,14 +1,14 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { GuardMintBase } from "./GuardMintBase.t.sol";
 
-/// @notice The guard's core claim: `guardMint` mints when `estimatedSupply` equals `totalSupply()` and refuses
+/// @notice The guard's core claim: `guardEncode` mints when `estimatedSupply` equals `totalSupply()` and refuses
 ///         when it does not. Every test here is already past the role gate — `Authority.t.sol` owns that.
 contract GuardMintEstimateTest is GuardMintBase {
     function test_MinterCanGuardMint_WhenEstimateMatches() public {
         vm.prank(minter);
-        token.guardMint(bob, 50 ether, INITIAL_MINT);
+        token.guardEncode(bob, 50 ether, INITIAL_MINT);
         assertEq(token.balanceOf(bob), 50 ether);
         assertEq(token.totalSupply(), INITIAL_MINT + 50 ether);
     }
@@ -18,13 +18,13 @@ contract GuardMintEstimateTest is GuardMintBase {
     function test_GuardMint_EmitsTransferFromTheZeroAddress() public {
         _expectTransferEvent(address(0), bob, 50 ether);
         vm.prank(minter);
-        token.guardMint(bob, 50 ether, INITIAL_MINT);
+        token.guardEncode(bob, 50 ether, INITIAL_MINT);
     }
 
     function test_GuardMint_RevertsOnWrongEstimate() public {
         vm.prank(minter);
         _expectSupplyMismatch(INITIAL_MINT, INITIAL_MINT - 1);
-        token.guardMint(bob, 50 ether, INITIAL_MINT - 1);
+        token.guardEncode(bob, 50 ether, INITIAL_MINT - 1);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "a refused mint must not change supply");
         assertEq(token.balanceOf(bob), 0, "a refused mint must not credit the recipient");
@@ -41,7 +41,7 @@ contract GuardMintEstimateTest is GuardMintBase {
 
         vm.prank(minter);
         _expectSupplyMismatch(supply, estimate);
-        token.guardMint(bob, 1 ether, estimate);
+        token.guardEncode(bob, 1 ether, estimate);
 
         assertEq(token.totalSupply(), supply, "a refused mint must not change supply, whatever the estimate was");
     }

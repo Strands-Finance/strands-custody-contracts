@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
@@ -9,18 +9,13 @@ import { BaseTest } from "../Base.t.sol";
 ///         or burn? No — and this suite is where that is answered for the WHOLE
 ///         supply-changing surface in one place, rather than a path at a time
 ///         across `Mint.t.sol`, `AdminBurn.t.sol`, `BurnAuthority.t.sol` and
-///         `guardMint/Authority.t.sol`.
+///         `guardEncode/Authority.t.sol`.
 ///
-/// @dev    Two things are easy to conflate and are separated here. The Strands
-///         entrypoints (`mint`, `guardMint`, `adminBurn`, `guardBurn`) were
-///         written gated. The `burn` / `burnFrom` that OZ's {ERC20Burnable}
-///         hands EVERY holder were not — they are `public virtual` upstream and
-///         are gated here only because this contract OVERRIDES them. An override
-///         that were dropped in a merge would restore a holder's ability to
-///         destroy their own claim, and would do so silently: the token would
-///         still compile, still mint, still transfer.
-///         `test_BurnAndBurnFrom_AreOverridden_NotMerelyUnreachable` is the
-///         assertion that would go red.
+/// @dev    Every supply-changing entrypoint (`encode`, `guardEncode`,
+///         `adminRetract`, `guardRetract`) is written gated, and the contract
+///         inherits plain {ERC20} rather than {ERC20Burnable}, so there is no
+///         holder-reachable `burn` / `burnFrom` at all — the gate is structural,
+///         not an override that a merge could silently drop.
 ///
 ///         `SupplyInvariant.t.sol` covers the same property from the other
 ///         direction — fuzzer-enumerated over the entire ABI, so an entrypoint
@@ -43,17 +38,13 @@ contract ExternalUserSurfaceTest is BaseTest {
 
         vm.startPrank(caller);
         _expectNotMinter(caller);
-        token.mint(caller, 1 ether);
+        token.encode(caller, 1 ether);
         _expectNotMinter(caller);
-        token.guardMint(caller, 1 ether, supplyBefore);
+        token.guardEncode(caller, 1 ether, supplyBefore);
         _expectNotMinter(caller);
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
         _expectNotMinter(caller);
-        token.guardBurn(alice, 1 ether, supplyBefore);
-        _expectNotMinter(caller);
-        token.burn(1 ether);
-        _expectNotMinter(caller);
-        token.burnFrom(alice, 1 ether);
+        token.guardRetract(alice, 1 ether, supplyBefore);
         vm.stopPrank();
 
         assertEq(token.totalSupply(), supplyBefore, "no rejected call may move supply");
@@ -61,11 +52,11 @@ contract ExternalUserSurfaceTest is BaseTest {
         assertEq(token.allowance(alice, caller), type(uint256).max, "nor spend the allowance");
     }
 
-    /// @dev The same six, for a caller who is unambiguously a HOLDER — funded,
+    /// @dev The same four, for a caller who is unambiguously a HOLDER — funded,
     ///      and burning an amount they actually own. The fuzz above bounds
     ///      `caller` away from the roles but says nothing about its balance, so
-    ///      "insufficient balance" remains an available explanation there for
-    ///      the two self-burn paths. Here it is not.
+    ///      "insufficient balance" remains an available explanation there.
+    ///      Here it is not.
     function test_FundedHolder_IsRefusedByEveryMintAndBurnEntrypoint() public {
         _allow(bob); // funding bob is a transfer like any other, so the route has to be open first
 
@@ -75,52 +66,16 @@ contract ExternalUserSurfaceTest is BaseTest {
 
         vm.startPrank(bob);
         _expectNotMinter(bob);
-        token.mint(bob, 1 ether);
+        token.encode(bob, 1 ether);
         _expectNotMinter(bob);
-        token.guardMint(bob, 1 ether, INITIAL_MINT);
+        token.guardEncode(bob, 1 ether, INITIAL_MINT);
         _expectNotMinter(bob);
-        token.adminBurn(bob, 1 ether);
+        token.adminRetract(bob, 1 ether);
         _expectNotMinter(bob);
-        token.guardBurn(bob, 1 ether, INITIAL_MINT);
-        _expectNotMinter(bob);
-        token.burn(1 ether);
-        _expectNotMinter(bob);
-        token.burnFrom(bob, 1 ether);
+        token.guardRetract(bob, 1 ether, INITIAL_MINT);
         vm.stopPrank();
 
         assertEq(token.balanceOf(bob), 100 ether, "owning the balance is not authority to destroy it");
-        assertEq(token.totalSupply(), INITIAL_MINT);
-    }
-
-    /// @dev The override check, stated as its own property. A holder calling
-    ///      `burn` must be rejected by the ROLE GATE — an
-    ///      `AccessControlUnauthorizedAccount` — and not by anything upstream
-    ///      would have raised anyway. If the `override onlyRole(MINTER_ROLE)` on
-    ///      either function were dropped, `burn` would succeed outright and
-    ///      `burnFrom` would fail with `ERC20InsufficientAllowance` instead; both
-    ///      are caught here, and neither is caught by asserting a bare revert.
-    function test_BurnAndBurnFrom_AreOverridden_NotMerelyUnreachable() public {
-        // A balance to burn and an allowance to spend, so ERC20Burnable's own
-        // preconditions are all satisfied. The only thing left to refuse the
-        // call is the override.
-        vm.prank(alice);
-        token.approve(bob, 500 ether);
-
-        vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, MINTER_ROLE)
-        );
-        token.burn(100 ether);
-
-        vm.prank(bob);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, MINTER_ROLE)
-        );
-        token.burnFrom(alice, 100 ether);
-
-        // The role gate ran FIRST: an ungated burnFrom would have consumed the
-        // allowance on its way through `super`.
-        assertEq(token.allowance(alice, bob), 500 ether, "the gate must precede _spendAllowance");
         assertEq(token.totalSupply(), INITIAL_MINT);
     }
 
@@ -133,20 +88,20 @@ contract ExternalUserSurfaceTest is BaseTest {
 
         vm.prank(bob);
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, MINTER_ROLE)
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, OPERATOR_ROLE)
         );
-        token.burn(1 ether);
+        token.adminRetract(bob, 1 ether);
     }
 
-    /// @dev And the control that keeps the four assertions above honest: with
+    /// @dev And the control that keeps the assertions above honest: with
     ///      the role held, the very same call succeeds. Without this, every test
     ///      here would keep passing if burning were broken outright.
     function test_TheSameCallSucceedsForTheMinter() public {
         vm.prank(minter);
-        token.mint(minter, 1 ether);
+        token.encode(minter, 1 ether);
 
         vm.prank(minter);
-        token.burn(1 ether);
+        token.adminRetract(minter, 1 ether);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "the refusals above are about the role, not the call");
     }
@@ -178,13 +133,13 @@ contract ExternalUserSurfaceTest is BaseTest {
 
     /// @dev Belt and braces on the error identity, so `_expectNotMinter` above
     ///      cannot silently start matching something else: the rejection names
-    ///      MINTER_ROLE specifically, not merely "some role".
+    ///      OPERATOR_ROLE specifically, not merely "some role".
     function test_TheRejectionNamesMinterRole() public {
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, MINTER_ROLE)
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, OPERATOR_ROLE)
         );
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
     }
 
     /// @dev A holder cannot reach the burn by handing their balance to the

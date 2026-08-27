@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
@@ -10,7 +10,7 @@ import { BaseTest } from "../Base.t.sol";
 ///         story the README states:
 ///
 ///         1. The admin holds NO power over balances. It can reach one by
-///            granting itself MINTER_ROLE, but that is a separate transaction
+///            granting itself OPERATOR_ROLE, but that is a separate transaction
 ///            which lands on-chain as {RoleGranted} — a standing power converted
 ///            into a visible, auditable escalation. This is the property that
 ///            makes OpenZeppelin's "keep DEFAULT_ADMIN_ROLE cold" advice
@@ -37,13 +37,10 @@ contract AdminLifecycleTest is BaseTest {
         vm.startPrank(admin);
 
         _expectNotMinter(admin);
-        token.mint(admin, 1 ether);
+        token.encode(admin, 1 ether);
 
         _expectNotMinter(admin);
-        token.adminBurn(alice, 1 ether);
-
-        _expectNotMinter(admin);
-        token.burnFrom(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
 
         vm.stopPrank();
 
@@ -64,12 +61,6 @@ contract AdminLifecycleTest is BaseTest {
         _allow(admin);
 
         vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, MINTER_ROLE)
-        );
-        token.burnFrom(alice, 1 ether);
-
-        vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, admin, 0, 1 ether));
         token.transferFrom(alice, admin, 1 ether);
 
@@ -77,7 +68,7 @@ contract AdminLifecycleTest is BaseTest {
         assertEq(token.balanceOf(admin), 0);
     }
 
-    /// @dev Escalation IS available — the admin administers MINTER_ROLE — but
+    /// @dev Escalation IS available — the admin administers OPERATOR_ROLE — but
     ///      only through a grant that is visible on-chain. That visibility is
     ///      the whole security argument for removing `adminTransfer`, so it is
     ///      asserted rather than left as prose.
@@ -89,19 +80,19 @@ contract AdminLifecycleTest is BaseTest {
     ///      about blast radius will look for it in this file.
     function test_Admin_ReachesSupplyOnlyViaAVisibleSelfGrant() public {
         vm.expectEmit(true, true, true, false, address(token));
-        emit IAccessControl.RoleGranted(MINTER_ROLE, admin, admin);
+        emit IAccessControl.RoleGranted(OPERATOR_ROLE, admin, admin);
 
         vm.prank(admin);
-        token.grantRole(MINTER_ROLE, admin);
+        token.grantRole(OPERATOR_ROLE, admin);
 
         vm.startPrank(admin);
-        token.adminBurn(alice, 100 ether);
-        token.mint(admin, 100 ether);
+        token.adminRetract(alice, 100 ether);
+        token.encode(admin, 100 ether);
         vm.stopPrank();
 
         assertEq(token.balanceOf(alice), INITIAL_MINT - 100 ether, "one grant opened the burn side");
         assertEq(token.balanceOf(admin), 100 ether, "and the mint side, in the same appointment");
-        assertTrue(token.hasRole(MINTER_ROLE, admin), "the escalation is durable state, not a transient bypass");
+        assertTrue(token.hasRole(OPERATOR_ROLE, admin), "the escalation is durable state, not a transient bypass");
     }
 
     // ---------- the standing power the admin DOES hold ----------
@@ -142,21 +133,21 @@ contract AdminLifecycleTest is BaseTest {
 
         // the successor holds the full admin surface
         vm.startPrank(newAdmin);
-        token.grantRole(MINTER_ROLE, carol);
-        token.revokeRole(MINTER_ROLE, carol);
+        token.grantRole(OPERATOR_ROLE, carol);
+        token.revokeRole(OPERATOR_ROLE, carol);
         vm.stopPrank();
-        assertFalse(token.hasRole(MINTER_ROLE, carol), "successor can grant and revoke");
+        assertFalse(token.hasRole(OPERATOR_ROLE, carol), "successor can grant and revoke");
 
         // ...and the predecessor holds none of it
         vm.startPrank(admin);
         _expectNotAdmin(admin);
-        token.grantRole(MINTER_ROLE, bob);
+        token.grantRole(OPERATOR_ROLE, bob);
         _expectNotAdmin(admin);
-        token.revokeRole(MINTER_ROLE, minter);
+        token.revokeRole(OPERATOR_ROLE, minter);
         vm.stopPrank();
 
-        assertFalse(token.hasRole(MINTER_ROLE, bob), "a stripped admin cannot appoint");
-        assertTrue(token.hasRole(MINTER_ROLE, minter), "nor dismantle the role graph");
+        assertFalse(token.hasRole(OPERATOR_ROLE, bob), "a stripped admin cannot appoint");
+        assertTrue(token.hasRole(OPERATOR_ROLE, minter), "nor dismantle the role graph");
         assertEq(token.totalSupply(), INITIAL_MINT, "a rotation moves no supply");
     }
 
@@ -169,11 +160,11 @@ contract AdminLifecycleTest is BaseTest {
         vm.prank(minter);
         token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
 
-        assertTrue(token.hasRole(MINTER_ROLE, minter), "gaining admin must not displace the existing role");
+        assertTrue(token.hasRole(OPERATOR_ROLE, minter), "gaining admin must not displace the existing role");
 
         vm.startPrank(minter);
-        token.mint(alice, 50 ether);
-        token.adminBurn(alice, 50 ether);
+        token.encode(alice, 50 ether);
+        token.adminRetract(alice, 50 ether);
         vm.stopPrank();
         assertEq(token.totalSupply(), INITIAL_MINT, "the incumbent still works after the rotation");
     }
@@ -194,10 +185,10 @@ contract AdminLifecycleTest is BaseTest {
             current = chain[i];
 
             vm.prank(current);
-            token.grantRole(MINTER_ROLE, carol);
-            assertTrue(token.hasRole(MINTER_ROLE, carol), "each successor holds full admin access");
+            token.grantRole(OPERATOR_ROLE, carol);
+            assertTrue(token.hasRole(OPERATOR_ROLE, carol), "each successor holds full admin access");
             vm.prank(current);
-            token.revokeRole(MINTER_ROLE, carol);
+            token.revokeRole(OPERATOR_ROLE, carol);
         }
     }
 
@@ -229,8 +220,8 @@ contract AdminLifecycleTest is BaseTest {
         assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
 
         vm.prank(newAdmin);
-        token.grantRole(MINTER_ROLE, carol);
-        assertTrue(token.hasRole(MINTER_ROLE, carol), "renouncing with a successor in place is not a freeze");
+        token.grantRole(OPERATOR_ROLE, carol);
+        assertTrue(token.hasRole(OPERATOR_ROLE, carol), "renouncing with a successor in place is not a freeze");
     }
 
     // ---------- losing the last admin ----------
@@ -244,12 +235,12 @@ contract AdminLifecycleTest is BaseTest {
 
         vm.startPrank(admin);
         _expectNotAdmin(admin);
-        token.grantRole(MINTER_ROLE, carol);
+        token.grantRole(OPERATOR_ROLE, carol);
         _expectNotAdmin(admin);
         token.grantRole(DEFAULT_ADMIN_ROLE, carol);
         vm.stopPrank();
 
-        assertFalse(token.hasRole(MINTER_ROLE, carol));
+        assertFalse(token.hasRole(OPERATOR_ROLE, carol));
         assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, carol));
     }
 
@@ -280,7 +271,7 @@ contract AdminLifecycleTest is BaseTest {
 
         vm.prank(admin);
         _expectNotAdmin(admin);
-        token.grantRole(MINTER_ROLE, carol);
+        token.grantRole(OPERATOR_ROLE, carol);
     }
 
     /// @dev The freeze is a snapshot, not a shutdown: incumbents keep every
@@ -296,8 +287,8 @@ contract AdminLifecycleTest is BaseTest {
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
         vm.startPrank(minter);
-        token.mint(carol, 10 ether);
-        token.adminBurn(carol, 10 ether);
+        token.encode(carol, 10 ether);
+        token.adminRetract(carol, 10 ether);
         vm.stopPrank();
         assertEq(token.totalSupply(), INITIAL_MINT, "incumbents are unaffected by the freeze");
 
@@ -329,26 +320,26 @@ contract AdminLifecycleTest is BaseTest {
         _allow(bob); // the last thing the admin can ever do for this balance
 
         vm.prank(minter);
-        token.renounceRole(MINTER_ROLE, minter);
+        token.renounceRole(OPERATOR_ROLE, minter);
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
         // every burn path is closed, for the incumbent and for the holder alike
         vm.startPrank(minter);
         _expectNotMinter(minter);
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
         _expectNotMinter(minter);
-        token.guardBurn(alice, 1 ether, INITIAL_MINT);
+        token.guardRetract(alice, 1 ether, INITIAL_MINT);
         vm.stopPrank();
 
         vm.prank(alice);
         _expectNotMinter(alice);
-        token.burn(INITIAL_MINT);
+        token.adminRetract(alice, INITIAL_MINT);
 
         // and nobody can appoint a replacement
         vm.startPrank(admin);
         _expectNotAdmin(admin);
-        token.grantRole(MINTER_ROLE, carol);
+        token.grantRole(OPERATOR_ROLE, carol);
         _expectNotAdmin(admin);
         token.grantRole(DEFAULT_ADMIN_ROLE, carol);
         vm.stopPrank();
@@ -367,18 +358,18 @@ contract AdminLifecycleTest is BaseTest {
     ///      immediately.
     function test_MinterLossAloneIsRecoverableWhileAnAdminSurvives() public {
         vm.prank(minter);
-        token.renounceRole(MINTER_ROLE, minter);
+        token.renounceRole(OPERATOR_ROLE, minter);
 
         vm.prank(minter);
         _expectNotMinter(minter);
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
 
         vm.prank(admin);
-        token.grantRole(MINTER_ROLE, carol);
+        token.grantRole(OPERATOR_ROLE, carol);
 
         vm.startPrank(carol);
-        token.adminBurn(alice, 1 ether);
-        token.mint(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
+        token.encode(alice, 1 ether);
         vm.stopPrank();
 
         assertEq(token.totalSupply(), INITIAL_MINT, "the replacement holds the whole operating surface");

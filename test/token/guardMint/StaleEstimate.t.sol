@@ -1,60 +1,32 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { GuardMintBase } from "./GuardMintBase.t.sol";
 
 /// @notice Anything that moves supply between the caller's read and the call voids the estimate — and the
 ///         corrected estimate then works.
-/// @dev    This is the incident `guardMint` exists for, and it has more than one shape. A burn can shrink the
-///         supply through any of three unguarded entrypoints (`adminBurn`, `burn`, `burnFrom`), and a second
-///         minter can grow it. The guard reads `totalSupply()` and nothing else, so all four are interchangeable
-///         here — which is the property under test, not an accident of how these are written. Each case asserts
-///         BOTH halves: the stale read is refused, and the fresh one goes through. A guard that refused
-///         everything after a burn would pass a revert-only test while bricking the mint path.
+/// @dev    This is the incident `guardEncode` exists for, and it has more than one shape. A burn can shrink the
+///         supply through `adminRetract`, and a second minter can grow it. The guard reads `totalSupply()` and
+///         nothing else, so the routes are interchangeable here — which is the property under test, not an
+///         accident of how these are written. Each case asserts BOTH halves: the stale read is refused, and the
+///         fresh one goes through. A guard that refused everything after a burn would pass a revert-only test
+///         while bricking the mint path.
 contract GuardMintStaleEstimateTest is GuardMintBase {
-    enum BurnPath {
-        Admin,
-        Self,
-        From
-    }
-
-    /// @dev Destroy `amount` of `from`'s balance through `path`, doing whatever setup that path requires.
-    ///      `BurnAuthority.t.sol` owns which caller may use which entrypoint; here they differ only in route.
-    function _burnVia(BurnPath path, address from, uint256 amount) private {
-        if (path == BurnPath.Admin) {
-            vm.prank(minter);
-            token.adminBurn(from, amount);
-        } else if (path == BurnPath.Self) {
-            // `burn` destroys the CALLER's balance, so it has to be the minter's first — and that hop is an
-            // ordinary transfer, so the minter has to be an allowed destination for it.
-            _allow(minter);
-            vm.prank(from);
-            token.transfer(minter, amount);
-            vm.prank(minter);
-            token.burn(amount);
-        } else {
-            vm.prank(from);
-            token.approve(minter, amount);
-            vm.prank(minter);
-            token.burnFrom(from, amount);
-        }
-    }
-
-    /// @dev One statement, three entrypoints.
-    function _assertGuardTracksSupplyBurnedVia(BurnPath path) private {
+    function _assertGuardTracksSupplyBurned() private {
         uint256 estimate = token.totalSupply();
 
-        _burnVia(path, alice, 100 ether);
+        vm.prank(minter);
+        token.adminRetract(alice, 100 ether);
         uint256 postBurn = estimate - 100 ether;
         assertEq(token.totalSupply(), postBurn, "precondition: this path destroyed exactly 100 ether");
 
         vm.prank(minter);
         _expectSupplyMismatch(postBurn, estimate);
-        token.guardMint(bob, 50 ether, estimate);
+        token.guardEncode(bob, 50 ether, estimate);
         assertEq(token.totalSupply(), postBurn, "a refused mint must not move supply");
 
         vm.prank(minter);
-        token.guardMint(bob, 50 ether, postBurn);
+        token.guardEncode(bob, 50 ether, postBurn);
         assertEq(token.totalSupply(), postBurn + 50 ether, "the corrected estimate goes through");
         assertEq(token.balanceOf(bob), 50 ether);
     }
@@ -65,23 +37,15 @@ contract GuardMintStaleEstimateTest is GuardMintBase {
         uint256 estimate = token.totalSupply();
 
         vm.prank(minter);
-        token.adminBurn(alice, 1 ether);
+        token.adminRetract(alice, 1 ether);
 
         vm.prank(minter);
         _expectSupplyMismatch(INITIAL_MINT - 1 ether, estimate);
-        token.guardMint(bob, 50 ether, estimate);
+        token.guardEncode(bob, 50 ether, estimate);
     }
 
     function test_GuardMint_TracksSupplyBurnedVia_AdminBurn() public {
-        _assertGuardTracksSupplyBurnedVia(BurnPath.Admin);
-    }
-
-    function test_GuardMint_TracksSupplyBurnedVia_Burn() public {
-        _assertGuardTracksSupplyBurnedVia(BurnPath.Self);
-    }
-
-    function test_GuardMint_TracksSupplyBurnedVia_BurnFrom() public {
-        _assertGuardTracksSupplyBurnedVia(BurnPath.From);
+        _assertGuardTracksSupplyBurned();
     }
 
     /// @dev The mint-side race, and the likelier production incident: two minters (a retried job, two backend
@@ -89,16 +53,16 @@ contract GuardMintStaleEstimateTest is GuardMintBase {
     ///      a reason no burn caused, and must be refused rather than double-minting the same delta.
     function test_GuardMint_SecondMinterActingOnTheSameReadIsRefused() public {
         vm.prank(admin);
-        token.grantRole(MINTER_ROLE, carol);
+        token.grantRole(OPERATOR_ROLE, carol);
 
         uint256 sharedRead = token.totalSupply();
 
         vm.prank(minter);
-        token.guardMint(bob, 50 ether, sharedRead);
+        token.guardEncode(bob, 50 ether, sharedRead);
 
         vm.prank(carol);
         _expectSupplyMismatch(sharedRead + 50 ether, sharedRead);
-        token.guardMint(bob, 50 ether, sharedRead);
+        token.guardEncode(bob, 50 ether, sharedRead);
 
         assertEq(token.balanceOf(bob), 50 ether, "the delta lands once, not once per replica");
         assertEq(token.totalSupply(), INITIAL_MINT + 50 ether);
@@ -112,10 +76,10 @@ contract GuardMintStaleEstimateTest is GuardMintBase {
 
         vm.prank(minter);
         _expectSupplyMismatch(INITIAL_MINT, stale);
-        token.guardMint(bob, 50 ether, stale);
+        token.guardEncode(bob, 50 ether, stale);
 
         vm.prank(minter);
-        token.guardMint(bob, 50 ether, INITIAL_MINT); // the `actualSupply` the revert just reported
+        token.guardEncode(bob, 50 ether, INITIAL_MINT); // the `actualSupply` the revert just reported
 
         assertEq(token.totalSupply(), INITIAL_MINT + 50 ether, "a refusal must not latch the mint path shut");
         assertEq(token.balanceOf(bob), 50 ether, "and the retry mints exactly once, not twice");
