@@ -19,7 +19,7 @@ import { BaseTest } from "../Base.t.sol";
 ///         Senders are pinned rather than random, and every one of them is an
 ///         ordinary user: `alice` holds the fixture's entire supply (so a burn
 ///         that slipped through would actually have something to destroy),
-///         `bob` and `carol` hold nothing. Neither `minter` nor `admin` appears,
+///         `bob` and `carol` hold nothing. Neither `operator` nor `admin` appears,
 ///         which is what makes the assertion "no unprivileged caller can change
 ///         supply" rather than "supply never changes".
 ///
@@ -49,7 +49,7 @@ contract SupplyInvariantTest is BaseTest {
 
     /// @dev The property in one line: no address without OPERATOR_ROLE can change
     ///      how many tokens exist, by any route, in any order.
-    function invariant_TotalSupplyIsUnreachableWithoutMinterRole() public view {
+    function invariant_TotalSupplyIsUnreachableWithoutOperatorRole() public view {
         assertEq(token.totalSupply(), INITIAL_MINT, "an unprivileged caller changed the supply");
     }
 
@@ -58,7 +58,7 @@ contract SupplyInvariantTest is BaseTest {
     ///      admin being repointed at something they can obtain. Neither may
     ///      happen through any call an ordinary user can make.
     function invariant_TheRoleGraphIsUnreachableWithoutTheAdmin() public view {
-        assertTrue(token.hasRole(OPERATOR_ROLE, minter), "the seated minter was unseated by a stranger");
+        assertTrue(token.hasRole(OPERATOR_ROLE, operator), "the seated operator was unseated by a stranger");
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin), "the seated admin was unseated by a stranger");
         assertEq(token.getRoleAdmin(OPERATOR_ROLE), DEFAULT_ADMIN_ROLE, "OPERATOR_ROLE's admin was repointed");
 

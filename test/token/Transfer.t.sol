@@ -96,19 +96,19 @@ contract TransferTest is BaseTest {
     ///      restricts it. Every one of these moves for the ordinary reason —
     ///      `bob` is open, and that is the whole permission any of them needs.
     function test_PrivilegedRoles_TransferLikeAnyOtherHolder() public {
-        vm.startPrank(minter);
+        vm.startPrank(operator);
         token.encode(admin, 10 ether);
-        token.encode(minter, 10 ether);
+        token.encode(operator, 10 ether);
         vm.stopPrank();
 
         vm.prank(admin);
         token.transfer(bob, 10 ether);
-        vm.prank(minter);
+        vm.prank(operator);
         token.transfer(bob, 10 ether);
 
         assertEq(token.balanceOf(bob), 20 ether);
         assertEq(token.balanceOf(admin), 0);
-        assertEq(token.balanceOf(minter), 0);
+        assertEq(token.balanceOf(operator), 0);
     }
 
     // ---------- the checks that DO still reject ----------

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
-import { GuardMintBase } from "./GuardMintBase.t.sol";
+import { GuardEncodeBase } from "./GuardEncodeBase.t.sol";
 import { StrandsDACAP } from "../../../src/StrandsDACAP.sol";
 
 /// @notice Zero is a value, not a sentinel.
@@ -11,12 +11,12 @@ import { StrandsDACAP } from "../../../src/StrandsDACAP.sol";
 ///         skip the check", or an `amount == 0` early-out that returns before the comparison, passes every
 ///         other suite in this folder. These pin both zeros as ordinary values — checked like any other number,
 ///         honoured only when they are actually correct.
-contract GuardMintZeroValuesTest is GuardMintBase {
-    /// @dev The deterministic form of a case `testFuzz_GuardMint_AnyWrongEstimateReverts` only reaches by
+contract GuardEncodeZeroValuesTest is GuardEncodeBase {
+    /// @dev The deterministic form of a case `testFuzz_GuardEncode_AnyWrongEstimateReverts` only reaches by
     ///      chance. A zero estimate against a funded token is the sentinel mutant's exact input, and it must be
     ///      refused like any other wrong number.
-    function test_GuardMint_ZeroEstimate_RevertsAgainstANonZeroSupply() public {
-        vm.prank(minter);
+    function test_GuardEncode_ZeroEstimate_RevertsAgainstANonZeroSupply() public {
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT, 0);
         token.guardEncode(bob, 50 ether, 0);
 
@@ -28,12 +28,12 @@ contract GuardMintZeroValuesTest is GuardMintBase {
     ///      go through. A token that has been emptied is back in the fresh-deployment state `guardEncode`'s docs
     ///      describe, and the guard has to say so — otherwise a fully-redeemed token could never be re-minted
     ///      without a redeploy.
-    function test_GuardMint_ZeroEstimate_IsAcceptedOnceSupplyIsBurnedToZero() public {
-        vm.prank(minter);
+    function test_GuardEncode_ZeroEstimate_IsAcceptedOnceSupplyIsBurnedToZero() public {
+        vm.prank(operator);
         token.adminRetract(alice, INITIAL_MINT);
         assertEq(token.totalSupply(), 0, "precondition: the entire supply was destroyed");
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardEncode(bob, 50 ether, 0);
 
         assertEq(token.totalSupply(), 50 ether, "zero is the real supply here, so the guard must honour it");
@@ -42,9 +42,9 @@ contract GuardMintZeroValuesTest is GuardMintBase {
 
     /// @dev A zero-amount mint is a legitimate no-op — the backend mints a DELTA, and a delta of zero is what a
     ///      reconciliation pass finds when nothing moved. It must succeed and change nothing.
-    function test_GuardMint_ZeroAmount_SucceedsAndMovesNothing() public {
+    function test_GuardEncode_ZeroAmount_SucceedsAndMovesNothing() public {
         _expectTransferEvent(address(0), bob, 0);
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardEncode(bob, 0, INITIAL_MINT);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "a zero delta leaves supply exactly where it was");
@@ -54,8 +54,8 @@ contract GuardMintZeroValuesTest is GuardMintBase {
     /// @dev And it is still GUARDED. This is the test that kills an `if (amount == 0) return;` early-out: under
     ///      that mutant the call below succeeds silently, telling a backend with a stale read that its estimate
     ///      was accepted — the precise false confirmation `guardEncode` exists to prevent.
-    function test_GuardMint_ZeroAmount_StillRejectsAWrongEstimate() public {
-        vm.prank(minter);
+    function test_GuardEncode_ZeroAmount_StillRejectsAWrongEstimate() public {
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT, INITIAL_MINT - 1);
         token.guardEncode(bob, 0, INITIAL_MINT - 1);
 
@@ -64,14 +64,14 @@ contract GuardMintZeroValuesTest is GuardMintBase {
 
     /// @dev Both zeros at once, on a fresh token, and the mint path is not wedged afterwards: a no-op first call
     ///      must leave the supply at zero so the NEXT call's estimate is still zero.
-    function test_GuardMint_ZeroAmountAndZeroEstimate_OnAFreshToken() public {
+    function test_GuardEncode_ZeroAmountAndZeroEstimate_OnAFreshToken() public {
         StrandsDACAP t = _deployWithDecimals(18);
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardEncode(bob, 0, 0);
         assertEq(t.totalSupply(), 0, "a no-op mint on an empty token leaves it empty");
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardEncode(bob, 1 ether, 0);
         assertEq(t.totalSupply(), 1 ether, "and the estimate the guard expects is still zero");
     }

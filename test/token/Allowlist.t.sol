@@ -14,8 +14,8 @@ import { BaseTest } from "../Base.t.sol";
 ///         ungated.
 ///
 ///         Nothing here covers the mint / burn exemption, because the suites
-///         that already own those paths cover it for free: `Mint.t.sol`,
-///         `AdminBurn.t.sol`, `GuardBurn.t.sol`, `BurnAuthority.t.sol` and the
+///         that already own those paths cover it for free: `Encode.t.sol`,
+///         `AdminRetract.t.sol`, `GuardRetract.t.sol`, `RetractAuthority.t.sol` and the
 ///         whole `guardEncode` tree run against the untouched fixture, whose
 ///         allowlist is empty. A guard that leaked into issuance or redemption
 ///         turns all of them red.
@@ -124,7 +124,7 @@ contract AllowlistTest is BaseTest {
         assertFalse(token.allowedDestination(bob));
     }
 
-    /// @dev The gate. `minter` is in the list because the operating role must
+    /// @dev The gate. `operator` is in the list because the operating role must
     ///      not be a shortcut into the writer — the whole restriction is worth
     ///      nothing if holding it lets you open your own destination. It is the
     ///      one that matters most now that OPERATOR_ROLE is the token's ONLY hot
@@ -132,7 +132,7 @@ contract AllowlistTest is BaseTest {
     ///      `alice` is a funded holder and `carol` an address with no standing
     ///      at all, so the three between them span every non-admin caller.
     function test_NonAdmin_CannotSetDestinationAllowed() public {
-        address[3] memory outsiders = [alice, minter, carol];
+        address[3] memory outsiders = [alice, operator, carol];
 
         for (uint256 i = 0; i < outsiders.length; i++) {
             vm.prank(outsiders[i]);

@@ -1,40 +1,40 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
-import { GuardMintBase } from "./GuardMintBase.t.sol";
+import { GuardEncodeBase } from "./GuardEncodeBase.t.sol";
 
 /// @notice Through any interleaving of guarded mints and burns, the estimate the guard accepts is exactly the
 ///         running supply — and the one next to it is refused.
 /// @dev    The general form of every scripted test in this folder. Those check the guard at a handful of hand-
 ///         picked supplies; these check that it holds at every supply a sequence walks through, so a guard that
 ///         drifted by one, or that latched after the first burn, fails here even having passed all of them.
-contract GuardMintSequenceTest is GuardMintBase {
+contract GuardEncodeSequenceTest is GuardEncodeBase {
     /// @dev The deterministic companion to the fuzz below, and the simplest statement of the claim: an
     ///      excursion that closes leaves no trace. The estimate that was correct before the round trip is
     ///      correct again afterwards, and the one that was correct mid-excursion is now refused — the guard
     ///      carries no memory of a supply it used to have.
-    function test_GuardMint_MintBurnRoundTrip_ReturnsToTheStartingEstimate() public {
+    function test_GuardEncode_MintBurnRoundTrip_ReturnsToTheStartingEstimate() public {
         uint256 start = token.totalSupply();
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardEncode(bob, 300 ether, start);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.adminRetract(bob, 300 ether);
         assertEq(token.totalSupply(), start, "precondition: the round trip is closed");
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(start, start + 300 ether);
         token.guardEncode(bob, 50 ether, start + 300 ether);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardEncode(bob, 50 ether, start);
         assertEq(token.totalSupply(), start + 50 ether, "the pre-excursion estimate is correct again");
     }
 
     /// @dev Every step asserts both directions. Mint amounts are drawn from 0 upward, so zero-amount mints occur
     ///      INSIDE the sequence too, at supplies no fixed test visits.
-    function testFuzz_GuardMint_TracksSupplyThroughAnyMintBurnSequence(uint8 steps, uint256 seed) public {
+    function testFuzz_GuardEncode_TracksSupplyThroughAnyMintBurnSequence(uint8 steps, uint256 seed) public {
         uint256 supply = token.totalSupply();
         uint256 n = bound(uint256(steps), 1, 16);
 
@@ -45,7 +45,7 @@ contract GuardMintSequenceTest is GuardMintBase {
 
             if (burning) {
                 uint256 amount = bound(draw >> 1, 1, token.balanceOf(alice));
-                vm.prank(minter);
+                vm.prank(operator);
                 token.adminRetract(alice, amount);
                 supply -= amount;
             } else {
@@ -53,12 +53,12 @@ contract GuardMintSequenceTest is GuardMintBase {
 
                 // The neighbouring estimate must be refused at EVERY point in the sequence, not just the first.
                 if (supply != 0) {
-                    vm.prank(minter);
+                    vm.prank(operator);
                     _expectSupplyMismatch(supply, supply - 1);
                     token.guardEncode(alice, amount, supply - 1);
                 }
 
-                vm.prank(minter);
+                vm.prank(operator);
                 token.guardEncode(alice, amount, supply);
                 supply += amount;
             }

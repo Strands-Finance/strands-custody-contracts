@@ -8,7 +8,7 @@ import { BaseTest } from "../Base.t.sol";
 /// @notice The one question an integrator asks first: can an ordinary user mint
 ///         or burn? No — and this suite is where that is answered for the WHOLE
 ///         supply-changing surface in one place, rather than a path at a time
-///         across `Mint.t.sol`, `AdminBurn.t.sol`, `BurnAuthority.t.sol` and
+///         across `Encode.t.sol`, `AdminRetract.t.sol`, `RetractAuthority.t.sol` and
 ///         `guardEncode/Authority.t.sol`.
 ///
 /// @dev    Every supply-changing entrypoint (`encode`, `guardEncode`,
@@ -28,7 +28,7 @@ contract ExternalUserSurfaceTest is BaseTest {
     ///      allowance is granted first so it can never be about a missing
     ///      approval either.
     function testFuzz_ArbitraryCaller_IsRefusedByEveryMintAndBurnEntrypoint(address caller) public {
-        vm.assume(caller != minter && caller != admin && caller != address(0));
+        vm.assume(caller != operator && caller != admin && caller != address(0));
 
         uint256 supplyBefore = token.totalSupply();
         uint256 aliceBefore = token.balanceOf(alice);
@@ -37,13 +37,13 @@ contract ExternalUserSurfaceTest is BaseTest {
         token.approve(caller, type(uint256).max);
 
         vm.startPrank(caller);
-        _expectNotMinter(caller);
+        _expectNotOperator(caller);
         token.encode(caller, 1 ether);
-        _expectNotMinter(caller);
+        _expectNotOperator(caller);
         token.guardEncode(caller, 1 ether, supplyBefore);
-        _expectNotMinter(caller);
+        _expectNotOperator(caller);
         token.adminRetract(alice, 1 ether);
-        _expectNotMinter(caller);
+        _expectNotOperator(caller);
         token.guardRetract(alice, 1 ether, supplyBefore);
         vm.stopPrank();
 
@@ -65,13 +65,13 @@ contract ExternalUserSurfaceTest is BaseTest {
         assertEq(token.balanceOf(bob), 100 ether, "precondition: bob owns what he is trying to burn");
 
         vm.startPrank(bob);
-        _expectNotMinter(bob);
+        _expectNotOperator(bob);
         token.encode(bob, 1 ether);
-        _expectNotMinter(bob);
+        _expectNotOperator(bob);
         token.guardEncode(bob, 1 ether, INITIAL_MINT);
-        _expectNotMinter(bob);
+        _expectNotOperator(bob);
         token.adminRetract(bob, 1 ether);
-        _expectNotMinter(bob);
+        _expectNotOperator(bob);
         token.guardRetract(bob, 1 ether, INITIAL_MINT);
         vm.stopPrank();
 
@@ -96,12 +96,12 @@ contract ExternalUserSurfaceTest is BaseTest {
     /// @dev And the control that keeps the assertions above honest: with
     ///      the role held, the very same call succeeds. Without this, every test
     ///      here would keep passing if burning were broken outright.
-    function test_TheSameCallSucceedsForTheMinter() public {
-        vm.prank(minter);
-        token.encode(minter, 1 ether);
+    function test_TheSameCallSucceedsForTheOperator() public {
+        vm.prank(operator);
+        token.encode(operator, 1 ether);
 
-        vm.prank(minter);
-        token.adminRetract(minter, 1 ether);
+        vm.prank(operator);
+        token.adminRetract(operator, 1 ether);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "the refusals above are about the role, not the call");
     }
@@ -131,10 +131,10 @@ contract ExternalUserSurfaceTest is BaseTest {
         assertEq(token.totalSupply(), INITIAL_MINT, "transfer and approve never change supply");
     }
 
-    /// @dev Belt and braces on the error identity, so `_expectNotMinter` above
+    /// @dev Belt and braces on the error identity, so `_expectNotOperator` above
     ///      cannot silently start matching something else: the rejection names
     ///      OPERATOR_ROLE specifically, not merely "some role".
-    function test_TheRejectionNamesMinterRole() public {
+    function test_TheRejectionNamesOperatorRole() public {
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, alice, OPERATOR_ROLE)

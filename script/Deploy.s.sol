@@ -17,21 +17,21 @@ contract Deploy is Script {
         string memory name_ = vm.envOr("TOKEN_NAME", string("Strands Custody Token"));
         string memory symbol_ = vm.envOr("TOKEN_SYMBOL", string("SCT"));
         // The one operating role. Defaulted to the admin so a single-key deploy (the backend's shape: one
-        // mint-authority EOA is admin and minter) needs no extra variables, while a production deploy points
+        // mint-authority EOA is admin and operator) needs no extra variables, while a production deploy points
         // it at its own multisig and keeps the admin key cold.
-        address minter = vm.envOr("MINTER_ADDRESS", admin);
+        address operator = vm.envOr("OPERATOR_ADDRESS", admin);
 
         vm.startBroadcast(pk);
         token = new StrandsDACAP(decimals_, name_, symbol_);
         // Same broadcast as the deploy: a token left uninitialized is inert, and the deployer key is the only
         // address that can finish it. Splitting these across runs turns a dropped second transaction into an
         // operator problem for no benefit.
-        token.initialize(admin, minter);
+        token.initialize(admin, operator);
         vm.stopBroadcast();
 
         console2.log("StrandsDACAP deployed at:", address(token));
         console2.log("Admin:", admin);
-        console2.log("Minter:", minter);
+        console2.log("Operator:", operator);
         console2.log("Decimals:", decimals_);
         console2.log("Name:", name_);
         console2.log("Symbol:", symbol_);

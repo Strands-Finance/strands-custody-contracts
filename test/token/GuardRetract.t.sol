@@ -8,24 +8,24 @@ import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 
 /// @notice `guardRetract` — the supply-checked burn entrypoint and its OPERATOR_ROLE gate.
 ///
-/// @dev    The mirror of `GuardMint.t.sol`, and deliberately structured the same way: the guard is the same
+/// @dev    The mirror of `GuardEncode.t.sol`, and deliberately structured the same way: the guard is the same
 ///         comparison against the same `totalSupply()`, so the same classes of fault apply (a zero read as a
 ///         sentinel, an amount-zero early-out, a decimals-scaled comparison) and the same tests kill them.
 ///
 ///         The role is mirrored too: `guardRetract` is OPERATOR_ROLE, as is every other burn entrypoint.
-///         `BurnAuthority.t.sol` owns who may reach the burn surface at all; this file owns what the GUARD does
+///         `RetractAuthority.t.sol` owns who may reach the burn surface at all; this file owns what the GUARD does
 ///         once they are through the gate.
-contract GuardBurnTest is BaseTest {
-    function test_MinterCanGuardBurn_WhenEstimateMatches() public {
-        vm.prank(minter);
+contract GuardRetractTest is BaseTest {
+    function test_OperatorCanGuardRetract_WhenEstimateMatches() public {
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, INITIAL_MINT);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT - 50 ether);
         assertEq(token.totalSupply(), INITIAL_MINT - 50 ether);
     }
 
-    function test_GuardBurn_RevertsOnWrongEstimate() public {
-        vm.prank(minter);
+    function test_GuardRetract_RevertsOnWrongEstimate() public {
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT, INITIAL_MINT - 1);
         token.guardRetract(alice, 50 ether, INITIAL_MINT - 1);
 
@@ -36,51 +36,51 @@ contract GuardBurnTest is BaseTest {
     /// @dev The exact incident shape, in the burn direction: a supply moving AFTER the caller read it (here: a
     ///      mint between read and burn) must void the estimate. This is the atomicity a plain `adminRetract`
     ///      cannot give.
-    function test_GuardBurn_RevertsWhenSupplyMovedAfterTheRead() public {
+    function test_GuardRetract_RevertsWhenSupplyMovedAfterTheRead() public {
         uint256 estimate = token.totalSupply();
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.encode(bob, 1 ether);
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT + 1 ether, estimate);
         token.guardRetract(alice, 50 ether, estimate);
     }
 
     // ---------- the role gate ----------
 
-    function test_NonMinter_CannotGuardBurn() public {
+    function test_NonOperator_CannotGuardRetract() public {
         vm.prank(alice);
-        _expectNotMinter(alice);
+        _expectNotOperator(alice);
         token.guardRetract(alice, 1, INITIAL_MINT);
     }
 
     /// @dev A holder with a balance is refused here just as they are at every other burn entrypoint — owning
     ///      the tokens is not authority to destroy them. Written against `bob` rather than `alice` so the
-    ///      refusal cannot be confused with a self-burn restriction, and paired with the minter succeeding on
+    ///      refusal cannot be confused with a self-burn restriction, and paired with the operator succeeding on
     ///      the same call so the rejection is about the ROLE GATE and not the arguments.
-    function test_FundedHolder_CannotGuardBurn() public {
+    function test_FundedHolder_CannotGuardRetract() public {
         _allow(bob); // funding bob is a transfer like any other, so the route has to be open first
 
         vm.prank(alice);
         token.transfer(bob, 50 ether);
 
         vm.prank(bob);
-        _expectNotMinter(bob);
+        _expectNotOperator(bob);
         token.guardRetract(bob, 50 ether, INITIAL_MINT);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "holding the balance is not authority to destroy it");
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(bob, 50 ether, INITIAL_MINT);
-        assertEq(token.totalSupply(), INITIAL_MINT - 50 ether, "the identical call lands for the minter");
+        assertEq(token.totalSupply(), INITIAL_MINT - 50 ether, "the identical call lands for the operator");
     }
 
     /// @dev The admin administers OPERATOR_ROLE but does not hold it, so it reaches `guardRetract` only through a
     ///      visible self-grant — the same escalation shape `AdminLifecycle.t.sol` pins for the other powers.
-    function test_Admin_CannotGuardBurnWithoutASelfGrant() public {
+    function test_Admin_CannotGuardRetractWithoutASelfGrant() public {
         vm.prank(admin);
-        _expectNotMinter(admin);
+        _expectNotOperator(admin);
         token.guardRetract(alice, 1 ether, INITIAL_MINT);
 
         vm.prank(admin);
@@ -94,26 +94,26 @@ contract GuardBurnTest is BaseTest {
     /// @dev No address is special. Bounded to an amount alice actually holds and an estimate that is actually
     ///      correct, so neither "insufficient balance" nor "wrong estimate" is an available explanation for
     ///      the rejection — only the missing role.
-    function testFuzz_ArbitraryNonMinter_CannotGuardBurn(address caller, uint96 amount) public {
-        vm.assume(caller != minter);
+    function testFuzz_ArbitraryNonOperator_CannotGuardRetract(address caller, uint96 amount) public {
+        vm.assume(caller != operator);
         uint256 value = bound(uint256(amount), 1, INITIAL_MINT);
 
         vm.prank(caller);
         _expectMissingRole(caller, OPERATOR_ROLE);
         token.guardRetract(alice, value, INITIAL_MINT);
 
-        assertEq(token.totalSupply(), INITIAL_MINT, "no caller but the minter may take this path");
+        assertEq(token.totalSupply(), INITIAL_MINT, "no caller but the operator may take this path");
     }
 
     /// @dev Revoking OPERATOR_ROLE closes the guarded burn immediately — the same beat `Roles.t.sol` pins for
-    ///      minting, restated here because a burn reached through the minter role is easy to forget when
+    ///      minting, restated here because a burn reached through the operator role is easy to forget when
     ///      reasoning about what a revocation costs.
-    function test_RevokedMinter_LosesGuardBurnImmediately() public {
+    function test_RevokedOperator_LosesGuardRetractImmediately() public {
         vm.prank(admin);
-        token.revokeRole(OPERATOR_ROLE, minter);
+        token.revokeRole(OPERATOR_ROLE, operator);
 
-        vm.prank(minter);
-        _expectNotMinter(minter);
+        vm.prank(operator);
+        _expectNotOperator(operator);
         token.guardRetract(alice, 1 ether, INITIAL_MINT);
 
         assertEq(token.totalSupply(), INITIAL_MINT);
@@ -123,11 +123,11 @@ contract GuardBurnTest is BaseTest {
 
     /// @dev The parameter is `uint256` rather than a narrower type because a wrong estimate is wrong at any
     ///      magnitude: a `uint96` draw explores the bottom 2^96 of the range and never reaches the top of it.
-    function testFuzz_GuardBurn_AnyWrongEstimateReverts(uint256 estimate) public {
+    function testFuzz_GuardRetract_AnyWrongEstimateReverts(uint256 estimate) public {
         uint256 supply = token.totalSupply();
         vm.assume(estimate != supply);
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(supply, estimate);
         token.guardRetract(alice, 1 ether, estimate);
 
@@ -136,14 +136,14 @@ contract GuardBurnTest is BaseTest {
 
     // ---------- zero is a value, not a sentinel ----------
     //
-    // The same pair of mutants `GuardMint.t.sol` documents applies verbatim here: a guard reading
+    // The same pair of mutants `GuardEncode.t.sol` documents applies verbatim here: a guard reading
     // `estimatedSupply == 0` as "unknown, skip the check", and an `amount == 0` early-out that returns before
     // the comparison. Both pass a suite in which every zero is only ever RIGHT.
 
     /// @dev A zero estimate against a funded token is the sentinel mutant's exact input, and must be refused
     ///      like any other wrong number.
-    function test_GuardBurn_ZeroEstimate_RevertsAgainstANonZeroSupply() public {
-        vm.prank(minter);
+    function test_GuardRetract_ZeroEstimate_RevertsAgainstANonZeroSupply() public {
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT, 0);
         token.guardRetract(alice, 50 ether, 0);
 
@@ -153,9 +153,9 @@ contract GuardBurnTest is BaseTest {
 
     /// @dev A zero-amount burn is a legitimate no-op — the backend acts on a delta, and a delta of zero is
     ///      what a reconciliation pass finds when nothing moved. It must succeed and change nothing.
-    function test_GuardBurn_ZeroAmount_SucceedsAndMovesNothing() public {
+    function test_GuardRetract_ZeroAmount_SucceedsAndMovesNothing() public {
         _expectTransferEvent(alice, address(0), 0);
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 0, INITIAL_MINT);
 
         assertEq(token.totalSupply(), INITIAL_MINT, "a zero delta leaves supply exactly where it was");
@@ -165,8 +165,8 @@ contract GuardBurnTest is BaseTest {
     /// @dev And it is still GUARDED. This is the test that kills an `if (amount == 0) return;` early-out:
     ///      under that mutant the call below succeeds silently, telling a backend with a stale read that its
     ///      estimate was accepted — the precise false confirmation the guard exists to prevent.
-    function test_GuardBurn_ZeroAmount_StillRejectsAWrongEstimate() public {
-        vm.prank(minter);
+    function test_GuardRetract_ZeroAmount_StillRejectsAWrongEstimate() public {
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT, INITIAL_MINT - 1);
         token.guardRetract(alice, 0, INITIAL_MINT - 1);
 
@@ -174,16 +174,16 @@ contract GuardBurnTest is BaseTest {
     }
 
     /// @dev A zero-amount burn against an EMPTY token: both zeros at once, on the one supply where a zero
-    ///      estimate is right. The mint-side equivalent is `test_GuardMint_ZeroAmountAndZeroEstimate_...`.
-    function test_GuardBurn_ZeroAmountAndZeroEstimate_OnAnEmptyToken() public {
+    ///      estimate is right. The mint-side equivalent is `test_GuardEncode_ZeroAmountAndZeroEstimate_...`.
+    function test_GuardRetract_ZeroAmountAndZeroEstimate_OnAnEmptyToken() public {
         StrandsDACAP t = _deployWithDecimals(18);
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardRetract(alice, 0, 0);
         assertEq(t.totalSupply(), 0, "a no-op burn on an empty token leaves it empty");
 
         // ...and the path is not wedged: the next call's estimate is still zero.
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardEncode(alice, 1 ether, 0);
         assertEq(t.totalSupply(), 1 ether);
     }
@@ -195,17 +195,17 @@ contract GuardBurnTest is BaseTest {
     ///      off-chain ledger reads {Burned}, which is the invariant this contract asks it to rely on.
     ///      Both are asserted because a burn visible to only one of them is the failure this event exists to
     ///      prevent.
-    function test_GuardBurn_EmitsBurnedAndTransferToZero() public {
+    function test_GuardRetract_EmitsBurnedAndTransferToZero() public {
         _expectTransferEvent(alice, address(0), 50 ether);
-        _expectBurnedEvent(minter, alice, 50 ether);
+        _expectBurnedEvent(operator, alice, 50 ether);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, INITIAL_MINT);
     }
 
-    /// @dev The `burnedBy` parameter reports WHOEVER burned, not the fixture's own minter — pinned with a
-    ///      second, freshly granted minter so a hardcoded `msg.sender` substitute would go red.
-    function test_GuardBurn_ReportsTheActualBurner() public {
+    /// @dev The `burnedBy` parameter reports WHOEVER burned, not the fixture's own operator — pinned with a
+    ///      second, freshly granted operator so a hardcoded `msg.sender` substitute would go red.
+    function test_GuardRetract_ReportsTheActualBurner() public {
         vm.prank(admin);
         token.grantRole(OPERATOR_ROLE, carol);
 
@@ -214,24 +214,24 @@ contract GuardBurnTest is BaseTest {
         token.guardRetract(alice, 10 ether, INITIAL_MINT);
     }
 
-    /// @dev What separates `guardRetract` from `burnFrom`: it needs no allowance and spends none. A minter that
+    /// @dev What separates `guardRetract` from `burnFrom`: it needs no allowance and spends none. A operator that
     ///      quietly consumed an allowance would make a holder's approval to some unrelated spender evaporate.
-    function test_GuardBurn_NeedsNoAllowanceAndConsumesNone() public {
+    function test_GuardRetract_NeedsNoAllowanceAndConsumesNone() public {
         vm.prank(alice);
-        token.approve(minter, 200 ether);
+        token.approve(operator, 200 ether);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, INITIAL_MINT);
 
-        assertEq(token.allowance(alice, minter), 200 ether, "the allowance must be untouched");
+        assertEq(token.allowance(alice, operator), 200 ether, "the allowance must be untouched");
         assertEq(token.totalSupply(), INITIAL_MINT - 50 ether, "and the burn needed none of it");
     }
 
     /// @dev The zero-allowance half of the same claim: with no approval at all the burn still goes through.
-    function test_GuardBurn_WorksWithNoAllowanceAtAll() public {
-        assertEq(token.allowance(alice, minter), 0, "precondition: alice has approved nobody");
+    function test_GuardRetract_WorksWithNoAllowanceAtAll() public {
+        assertEq(token.allowance(alice, operator), 0, "precondition: alice has approved nobody");
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, INITIAL_MINT);
 
         assertEq(token.balanceOf(alice), INITIAL_MINT - 50 ether);
@@ -240,14 +240,14 @@ contract GuardBurnTest is BaseTest {
     /// @dev The operator's remedy: a refusal is recoverable by re-reading and retrying. `SupplyMismatch`
     ///      carries `actualSupply` precisely so the corrected estimate is in the revert data — this asserts
     ///      that value is usable, not merely present, and that the retry burns once rather than twice.
-    function test_GuardBurn_RetryWithTheCorrectedEstimateSucceeds() public {
+    function test_GuardRetract_RetryWithTheCorrectedEstimateSucceeds() public {
         uint256 stale = INITIAL_MINT - 1;
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT, stale);
         token.guardRetract(alice, 50 ether, stale);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, INITIAL_MINT); // the `actualSupply` the revert just reported
 
         assertEq(token.totalSupply(), INITIAL_MINT - 50 ether, "a refusal must not latch the burn path shut");
@@ -260,8 +260,8 @@ contract GuardBurnTest is BaseTest {
     ///      arrives by a different route and is worth stating once. The guard must not mask it: an
     ///      over-burn is an insufficient-balance fault, not a supply mismatch, and misreporting it would
     ///      send an operator re-reading a supply that was never the problem.
-    function test_GuardBurn_ExceedingBalance_RevertsWithInsufficientBalance() public {
-        vm.prank(minter);
+    function test_GuardRetract_ExceedingBalance_RevertsWithInsufficientBalance() public {
+        vm.prank(operator);
         vm.expectRevert(
             abi.encodeWithSelector(
                 IERC20Errors.ERC20InsufficientBalance.selector, alice, INITIAL_MINT, INITIAL_MINT + 1
@@ -273,15 +273,15 @@ contract GuardBurnTest is BaseTest {
     }
 
     /// @dev A correct estimate does not license burning from an address with no balance at all.
-    function test_GuardBurn_FromAnEmptyHolder_Reverts() public {
-        vm.prank(minter);
+    function test_GuardRetract_FromAnEmptyHolder_Reverts() public {
+        vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, bob, 0, 1));
         token.guardRetract(bob, 1, INITIAL_MINT);
     }
 
     /// @dev The mirror of `guardEncode`'s zero-recipient case, reached through `_burn`'s own sender check.
-    function test_GuardBurn_FromTheZeroAddress_Reverts() public {
-        vm.prank(minter);
+    function test_GuardRetract_FromTheZeroAddress_Reverts() public {
+        vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidSender.selector, address(0)));
         token.guardRetract(address(0), 0, INITIAL_MINT);
     }
@@ -289,32 +289,32 @@ contract GuardBurnTest is BaseTest {
     /// @dev Burning the supply to exactly zero must work, and must leave the token re-mintable from a zero
     ///      estimate. The two guards have to agree on what "empty" means, or a fully-redeemed token could
     ///      never be re-minted without a redeploy.
-    function test_GuardBurn_ToZeroSupply_LeavesTheTokenReMintable() public {
-        vm.prank(minter);
+    function test_GuardRetract_ToZeroSupply_LeavesTheTokenReMintable() public {
+        vm.prank(operator);
         token.guardRetract(alice, INITIAL_MINT, INITIAL_MINT);
         assertEq(token.totalSupply(), 0, "the entire supply is destroyed");
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardEncode(bob, 50 ether, 0);
         assertEq(token.totalSupply(), 50 ether, "zero is the real supply here, so the mint guard must honour it");
     }
 
     /// @dev At the ceiling the guard still gates, and still does not mask arithmetic — the burn-side
-    ///      counterpart of `test_GuardMint_AtMaxSupply_GatesAndLetsOverflowPanic`. Burning more than the
+    ///      counterpart of `test_GuardEncode_AtMaxSupply_GatesAndLetsOverflowPanic`. Burning more than the
     ///      supply from a holder who holds all of it is ERC20's insufficient-balance error, not a panic;
     ///      the panic case is the mint side's.
-    function test_GuardBurn_AtMaxSupply_StillGates() public {
+    function test_GuardRetract_AtMaxSupply_StillGates() public {
         StrandsDACAP t = _deployWithDecimals(18);
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardEncode(bob, type(uint256).max, 0);
         assertEq(t.totalSupply(), type(uint256).max, "precondition: supply is at the ceiling");
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(type(uint256).max, type(uint256).max - 1);
         t.guardRetract(bob, 1, type(uint256).max - 1);
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardRetract(bob, 1, type(uint256).max); // a matching estimate still passes at the extreme
         assertEq(t.totalSupply(), type(uint256).max - 1);
     }
@@ -336,7 +336,7 @@ contract GuardBurnTest is BaseTest {
     function _mintVia(MintPath path, address to, uint256 amount) private {
         uint256 supply = token.totalSupply();
 
-        vm.prank(minter);
+        vm.prank(operator);
         if (path == MintPath.Plain) {
             token.encode(to, amount);
         } else {
@@ -354,52 +354,52 @@ contract GuardBurnTest is BaseTest {
         uint256 postMint = estimate + 100 ether;
         assertEq(token.totalSupply(), postMint, "precondition: this path issued exactly 100 ether");
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(postMint, estimate);
         token.guardRetract(alice, 50 ether, estimate);
         assertEq(token.totalSupply(), postMint, "a refused burn must not move supply");
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, postMint);
         assertEq(token.totalSupply(), postMint - 50 ether, "the corrected estimate goes through");
     }
 
-    function test_GuardBurn_TracksSupplyMintedVia_Mint() public {
+    function test_GuardRetract_TracksSupplyMintedVia_Mint() public {
         _assertGuardTracksSupplyMintedVia(MintPath.Plain);
     }
 
-    function test_GuardBurn_TracksSupplyMintedVia_GuardMint() public {
+    function test_GuardRetract_TracksSupplyMintedVia_GuardEncode() public {
         _assertGuardTracksSupplyMintedVia(MintPath.Guarded);
     }
 
     /// @dev And the unguarded burn paths move it the other way. An operator reaching for `adminRetract` between
     ///      the backend's read and its send is the realistic production interleaving — two independent
     ///      parties, one supply — and it is precisely the case `adminRetract` itself cannot detect.
-    function test_GuardBurn_TracksSupplyBurnedByAdminBurn() public {
+    function test_GuardRetract_TracksSupplyBurnedByAdminRetract() public {
         uint256 estimate = token.totalSupply();
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.adminRetract(alice, 100 ether);
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(INITIAL_MINT - 100 ether, estimate);
         token.guardRetract(alice, 50 ether, estimate);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, INITIAL_MINT - 100 ether);
         assertEq(token.totalSupply(), INITIAL_MINT - 150 ether);
     }
 
-    /// @dev The burn-side race, and the likelier production incident: two minters (a retried job, two backend
+    /// @dev The burn-side race, and the likelier production incident: two operators (a retried job, two backend
     ///      replicas) read the same supply, and only the first may act on it. The second's estimate is stale
     ///      for a reason no other party caused, and must be refused rather than double-burning the same delta.
-    function test_GuardBurn_SecondMinterActingOnTheSameReadIsRefused() public {
+    function test_GuardRetract_SecondOperatorActingOnTheSameReadIsRefused() public {
         vm.prank(admin);
         token.grantRole(OPERATOR_ROLE, carol);
 
         uint256 sharedRead = token.totalSupply();
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.guardRetract(alice, 50 ether, sharedRead);
 
         vm.prank(carol);
@@ -418,7 +418,7 @@ contract GuardBurnTest is BaseTest {
     ///      latched after the first mint, fails here even having passed every fixed script. Burn amounts are
     ///      drawn from 0 upward, so zero-amount burns occur INSIDE the sequence too, at supplies no fixed test
     ///      visits.
-    function testFuzz_GuardBurn_TracksSupplyThroughAnyMintBurnSequence(uint8 steps, uint256 seed) public {
+    function testFuzz_GuardRetract_TracksSupplyThroughAnyMintBurnSequence(uint8 steps, uint256 seed) public {
         uint256 supply = token.totalSupply();
         uint256 n = bound(uint256(steps), 1, 16);
 
@@ -429,7 +429,7 @@ contract GuardBurnTest is BaseTest {
 
             if (minting) {
                 uint256 amount = bound(draw >> 1, 1, 1_000 ether);
-                vm.prank(minter);
+                vm.prank(operator);
                 token.encode(alice, amount);
                 supply += amount;
             } else {
@@ -437,12 +437,12 @@ contract GuardBurnTest is BaseTest {
 
                 // The neighbouring estimate must be refused at EVERY point in the sequence, not just the first.
                 if (supply != 0) {
-                    vm.prank(minter);
+                    vm.prank(operator);
                     _expectSupplyMismatch(supply, supply - 1);
                     token.guardRetract(alice, amount, supply - 1);
                 }
 
-                vm.prank(minter);
+                vm.prank(operator);
                 token.guardRetract(alice, amount, supply);
                 supply -= amount;
             }
@@ -468,26 +468,26 @@ contract GuardBurnTest is BaseTest {
     ///      of the expectations mention `decimals_`, which is the property under test: the same script must
     ///      produce the same numbers at 6, 8 and 18. `amount` is deliberately not a whole number of display
     ///      units at any magnitude, so a scaling fault cannot coincidentally land on the right answer.
-    function _assertGuardBurnInvariantsAt(uint8 decimals_) private {
+    function _assertGuardRetractInvariantsAt(uint8 decimals_) private {
         StrandsDACAP t = _deployWithDecimals(decimals_);
         assertEq(t.decimals(), decimals_, "precondition: the token reports the magnitude under test");
 
         uint256 amount = 123_456_789;
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardEncode(bob, 3 * amount, 0);
         assertEq(t.totalSupply(), 3 * amount, "precondition: the raw amount is the supply");
 
         // 1. A NON-ZERO estimate must be the raw supply. This is the step with teeth: a comparison scaled by
         //    decimals() would divide it to a different number and revert.
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardRetract(bob, amount, 3 * amount);
         assertEq(t.totalSupply(), 2 * amount, "a matching raw estimate burns the raw amount");
         assertEq(t.balanceOf(bob), 2 * amount);
 
         // 2. A stale estimate reverts, and the revert DATA carries raw base units at every magnitude — that
         //    data is the diagnosis an operator reads, so a scaled `actual` would misreport the chain's state.
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(2 * amount, 3 * amount);
         t.guardRetract(bob, amount, 3 * amount);
         assertEq(t.totalSupply(), 2 * amount, "a refused burn must not move supply");
@@ -498,51 +498,51 @@ contract GuardBurnTest is BaseTest {
         //    fault to express (that is also why 0 dp cannot detect a scaling mutant).
         if (decimals_ > 0) {
             uint256 displayUnits = (2 * amount) / (10 ** decimals_);
-            vm.prank(minter);
+            vm.prank(operator);
             _expectSupplyMismatch(2 * amount, displayUnits);
             t.guardRetract(bob, amount, displayUnits);
         }
 
         // 4. The guard tracks whatever moved supply, not just burns: after a mint the estimate must be the NEW
         //    raw supply. Pairs the guarded burn with the mint path at every magnitude.
-        vm.prank(minter);
+        vm.prank(operator);
         t.encode(bob, amount);
         assertEq(t.totalSupply(), 3 * amount, "the mint adds exactly the raw amount");
 
-        vm.prank(minter);
+        vm.prank(operator);
         t.guardRetract(bob, amount, 3 * amount);
         assertEq(t.totalSupply(), 2 * amount, "the post-mint supply is the estimate the guard now expects");
     }
 
-    function test_GuardBurn_Invariants_At6Decimals() public {
-        _assertGuardBurnInvariantsAt(6); // usdc
+    function test_GuardRetract_Invariants_At6Decimals() public {
+        _assertGuardRetractInvariantsAt(6); // usdc
     }
 
-    function test_GuardBurn_Invariants_At8Decimals() public {
-        _assertGuardBurnInvariantsAt(8); // btc
+    function test_GuardRetract_Invariants_At8Decimals() public {
+        _assertGuardRetractInvariantsAt(8); // btc
     }
 
-    function test_GuardBurn_Invariants_At18Decimals() public {
-        _assertGuardBurnInvariantsAt(18); // eth / hteth
+    function test_GuardRetract_Invariants_At18Decimals() public {
+        _assertGuardRetractInvariantsAt(18); // eth / hteth
     }
 
     /// @dev The general form of the three above: no magnitude in the ERC20 range changes the guard's
     ///      behaviour. The named cases are kept alongside it because they fail deterministically at the
     ///      magnitudes actually deployed, whereas a fuzz run only reaches them by chance.
-    function testFuzz_GuardBurn_InvariantsHoldAtAnyDecimals(uint8 decimals_) public {
-        _assertGuardBurnInvariantsAt(uint8(bound(uint256(decimals_), 0, 18)));
+    function testFuzz_GuardRetract_InvariantsHoldAtAnyDecimals(uint8 decimals_) public {
+        _assertGuardRetractInvariantsAt(uint8(bound(uint256(decimals_), 0, 18)));
     }
 
     /// @dev The decimal-fault case. A backend that normalised supply to human units before handing it back
     ///      would pass 5 where the chain holds 5_000_000. The comparison is raw base units, so that must
     ///      revert rather than read as "5 USDC, close enough" — the estimate carries no scale of its own.
-    function test_GuardBurn_6dp_RejectsADecimalAdjustedEstimate() public {
+    function test_GuardRetract_6dp_RejectsADecimalAdjustedEstimate() public {
         StrandsDACAP usdc = _deployWithDecimals(6);
-        vm.prank(minter);
+        vm.prank(operator);
         usdc.guardEncode(alice, 5 * ONE_USDC, 0);
         assertEq(usdc.totalSupply(), 5 * ONE_USDC, "precondition: five whole USDC, i.e. 5_000_000 base units");
 
-        vm.prank(minter);
+        vm.prank(operator);
         _expectSupplyMismatch(5 * ONE_USDC, 5);
         usdc.guardRetract(alice, ONE_USDC, 5);
 
@@ -553,12 +553,12 @@ contract GuardBurnTest is BaseTest {
     ///      of different decimals yields the same totalSupply, because decimals() is not part of the
     ///      arithmetic. The burns are what give this teeth — their estimates are non-zero, and a comparison
     ///      scaled by decimals() would divide them to a different number and revert.
-    function test_GuardBurn_DecimalsDoNotAffectSupplyArithmetic() public {
+    function test_GuardRetract_DecimalsDoNotAffectSupplyArithmetic() public {
         StrandsDACAP sixDp = _deployWithDecimals(6);
         StrandsDACAP eighteenDp = _deployWithDecimals(18);
         uint256 amount = 123_456_789;
 
-        vm.startPrank(minter);
+        vm.startPrank(operator);
         sixDp.guardEncode(bob, 2 * amount, 0);
         eighteenDp.guardEncode(bob, 2 * amount, 0);
         sixDp.guardRetract(bob, amount, 2 * amount);

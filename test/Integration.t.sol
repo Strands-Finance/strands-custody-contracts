@@ -13,14 +13,14 @@ contract IntegrationTest is BaseTest {
     function test_HappyPath_MintTransferBurn() public {
         // Baseline that setUp established: token deployed, roles seated, alice funded.
         assertTrue(token.initialized());
-        assertTrue(token.hasRole(OPERATOR_ROLE, minter));
+        assertTrue(token.hasRole(OPERATOR_ROLE, operator));
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertEq(token.balanceOf(alice), INITIAL_MINT);
         assertEq(token.totalSupply(), INITIAL_MINT);
 
         // Mint: top alice up further.
         uint256 topUp = 500 ether;
-        vm.prank(minter);
+        vm.prank(operator);
         token.encode(alice, topUp);
         assertEq(token.balanceOf(alice), INITIAL_MINT + topUp);
         assertEq(token.totalSupply(), INITIAL_MINT + topUp);
@@ -34,10 +34,10 @@ contract IntegrationTest is BaseTest {
         assertEq(token.balanceOf(alice), INITIAL_MINT + topUp - sent);
         assertEq(token.balanceOf(bob), sent);
 
-        // Burn: minter redeems bob's balance; supply falls, Burned fires.
+        // Burn: operator redeems bob's balance; supply falls, Burned fires.
         uint256 supplyBefore = token.totalSupply();
-        _expectBurnedEvent(minter, bob, sent);
-        vm.prank(minter);
+        _expectBurnedEvent(operator, bob, sent);
+        vm.prank(operator);
         token.adminRetract(bob, sent);
         assertEq(token.balanceOf(bob), 0);
         assertEq(token.totalSupply(), supplyBefore - sent);
@@ -45,22 +45,22 @@ contract IntegrationTest is BaseTest {
 
     // ---------- unhappy paths (permission / allowlist denials) ----------
 
-    function test_Unhappy_NonMinterCannotMint() public {
+    function test_Unhappy_NonOperatorCannotMint() public {
         vm.prank(alice);
-        _expectNotMinter(alice);
+        _expectNotOperator(alice);
         token.encode(alice, 1 ether);
     }
 
     function test_Unhappy_AdminCannotMint() public {
         // The admin owns the role graph but no supply authority.
         vm.prank(admin);
-        _expectNotMinter(admin);
+        _expectNotOperator(admin);
         token.encode(alice, 1 ether);
     }
 
-    function test_Unhappy_NonMinterCannotBurn() public {
+    function test_Unhappy_NonOperatorCannotBurn() public {
         vm.prank(alice);
-        _expectNotMinter(alice);
+        _expectNotOperator(alice);
         token.adminRetract(alice, 1 ether);
     }
 

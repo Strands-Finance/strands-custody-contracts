@@ -22,4 +22,4 @@ import { BaseTest } from "../../Base.t.sol";
 ///         up into `Base.t.sol` when `guardRetract` arrived and needed the identical pair — one helper per claim,
 ///         not one per entrypoint. The type is kept so the suites below still name a common parent, and so a
 ///         helper that turns out to be guardEncode-specific has somewhere to land.
-abstract contract GuardMintBase is BaseTest { }
+abstract contract GuardEncodeBase is BaseTest { }

@@ -36,10 +36,10 @@ contract AdminLifecycleTest is BaseTest {
     function test_Admin_HasNoPowerOverBalances() public {
         vm.startPrank(admin);
 
-        _expectNotMinter(admin);
+        _expectNotOperator(admin);
         token.encode(admin, 1 ether);
 
-        _expectNotMinter(admin);
+        _expectNotOperator(admin);
         token.adminRetract(alice, 1 ether);
 
         vm.stopPrank();
@@ -143,26 +143,26 @@ contract AdminLifecycleTest is BaseTest {
         _expectNotAdmin(admin);
         token.grantRole(OPERATOR_ROLE, bob);
         _expectNotAdmin(admin);
-        token.revokeRole(OPERATOR_ROLE, minter);
+        token.revokeRole(OPERATOR_ROLE, operator);
         vm.stopPrank();
 
         assertFalse(token.hasRole(OPERATOR_ROLE, bob), "a stripped admin cannot appoint");
-        assertTrue(token.hasRole(OPERATOR_ROLE, minter), "nor dismantle the role graph");
+        assertTrue(token.hasRole(OPERATOR_ROLE, operator), "nor dismantle the role graph");
         assertEq(token.totalSupply(), INITIAL_MINT, "a rotation moves no supply");
     }
 
-    /// @dev A rotation is scoped to DEFAULT_ADMIN_ROLE. The incumbent minter
+    /// @dev A rotation is scoped to DEFAULT_ADMIN_ROLE. The incumbent operator
     ///      keeps working across it, and the successor may be an address that
     ///      already holds the operating role.
     function test_AdminHandover_LeavesOtherRolesIntact() public {
         vm.prank(admin);
-        token.grantRole(DEFAULT_ADMIN_ROLE, minter); // successor is an existing role holder
-        vm.prank(minter);
+        token.grantRole(DEFAULT_ADMIN_ROLE, operator); // successor is an existing role holder
+        vm.prank(operator);
         token.revokeRole(DEFAULT_ADMIN_ROLE, admin);
 
-        assertTrue(token.hasRole(OPERATOR_ROLE, minter), "gaining admin must not displace the existing role");
+        assertTrue(token.hasRole(OPERATOR_ROLE, operator), "gaining admin must not displace the existing role");
 
-        vm.startPrank(minter);
+        vm.startPrank(operator);
         token.encode(alice, 50 ether);
         token.adminRetract(alice, 50 ether);
         vm.stopPrank();
@@ -226,7 +226,7 @@ contract AdminLifecycleTest is BaseTest {
 
     // ---------- losing the last admin ----------
 
-    /// @dev Pins the README warning. The role graph freezes: no new minter,
+    /// @dev Pins the README warning. The role graph freezes: no new operator,
     ///      ever.
     function test_RenouncedLastAdmin_FreezesTheRoleGraph() public {
         vm.prank(admin);
@@ -251,7 +251,7 @@ contract AdminLifecycleTest is BaseTest {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
-        address[5] memory parties = [admin, alice, minter, bob, address(this)];
+        address[5] memory parties = [admin, alice, operator, bob, address(this)];
         for (uint256 i = 0; i < parties.length; i++) {
             vm.prank(parties[i]);
             _expectNotAdmin(parties[i]);
@@ -286,7 +286,7 @@ contract AdminLifecycleTest is BaseTest {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
-        vm.startPrank(minter);
+        vm.startPrank(operator);
         token.encode(carol, 10 ether);
         token.adminRetract(carol, 10 ether);
         vm.stopPrank();
@@ -307,33 +307,33 @@ contract AdminLifecycleTest is BaseTest {
 
     /// @dev The end state the README's "keep at least two holders of each role"
     ///      rule exists to prevent, and it now takes only TWO losses rather than
-    ///      three: one operating role means the minter is the sole redemption
-    ///      path, so admin + minter gone is terminal. Balances still move along
+    ///      three: one operating role means the operator is the sole redemption
+    ///      path, so admin + operator gone is terminal. Balances still move along
     ///      already-open routes but can never be redeemed by anyone, ever.
     ///
-    ///      The narrower loss is worth stating too: losing ONLY the minter is
+    ///      The narrower loss is worth stating too: losing ONLY the operator is
     ///      recoverable, because the admin can appoint a replacement — which is
-    ///      what `test_MinterLossAloneIsRecoverableWhileAnAdminSurvives` below
-    ///      pins. It is the surviving admin, not the surviving minter, that
+    ///      what `test_OperatorLossAloneIsRecoverableWhileAnAdminSurvives` below
+    ///      pins. It is the surviving admin, not the surviving operator, that
     ///      makes the difference.
-    function test_LosingTheLastAdminAndMinter_MakesRedemptionImpossible() public {
+    function test_LosingTheLastAdminAndOperator_MakesRedemptionImpossible() public {
         _allow(bob); // the last thing the admin can ever do for this balance
 
-        vm.prank(minter);
-        token.renounceRole(OPERATOR_ROLE, minter);
+        vm.prank(operator);
+        token.renounceRole(OPERATOR_ROLE, operator);
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
 
         // every burn path is closed, for the incumbent and for the holder alike
-        vm.startPrank(minter);
-        _expectNotMinter(minter);
+        vm.startPrank(operator);
+        _expectNotOperator(operator);
         token.adminRetract(alice, 1 ether);
-        _expectNotMinter(minter);
+        _expectNotOperator(operator);
         token.guardRetract(alice, 1 ether, INITIAL_MINT);
         vm.stopPrank();
 
         vm.prank(alice);
-        _expectNotMinter(alice);
+        _expectNotOperator(alice);
         token.adminRetract(alice, INITIAL_MINT);
 
         // and nobody can appoint a replacement
@@ -353,15 +353,15 @@ contract AdminLifecycleTest is BaseTest {
     }
 
     /// @dev The recoverable half of the same story, so the test above is not
-    ///      read as "losing the minter is fatal". A surviving admin can appoint
+    ///      read as "losing the operator is fatal". A surviving admin can appoint
     ///      a new one, and the new one reaches the full operating surface
     ///      immediately.
-    function test_MinterLossAloneIsRecoverableWhileAnAdminSurvives() public {
-        vm.prank(minter);
-        token.renounceRole(OPERATOR_ROLE, minter);
+    function test_OperatorLossAloneIsRecoverableWhileAnAdminSurvives() public {
+        vm.prank(operator);
+        token.renounceRole(OPERATOR_ROLE, operator);
 
-        vm.prank(minter);
-        _expectNotMinter(minter);
+        vm.prank(operator);
+        _expectNotOperator(operator);
         token.adminRetract(alice, 1 ether);
 
         vm.prank(admin);

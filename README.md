@@ -92,7 +92,7 @@ Both guards are load-bearing. The role check is what makes `initialize`
 un-front-runnable — a CREATE deploy is visible the moment it lands, and with
 only a one-shot guard the first stranger to call would own the token's mint and
 burn authority. The one-shot guard is what stops an admin silently re-seating a
-different minter later under a call named "initialize".
+different operator later under a call named "initialize".
 
 Between the two transactions the token is **inert** (nobody holds `OPERATOR_ROLE`,
 so every privileged entrypoint reverts) and **recoverable** (the deployer still
@@ -206,24 +206,24 @@ about whether a transfer using it will land.
 **Get tokens to a holder by minting, not transferring.** Minting to a treasury
 and transferring out works, but it costs an extra transfer and puts the treasury
 on the reconciler's `Transfer` log for no reason. Redemption is the mirror
-image: minter-driven, and the holder cannot initiate it.
+image: operator-driven, and the holder cannot initiate it.
 
 ```bash
 # 1. Deploy + initialize — the script does both in one broadcast, because a token left
 #    uninitialized is inert and only the deployer key can finish it.
 export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
 export TOKEN_NAME="Strands Custody USDC (BitGo)" TOKEN_SYMBOL="scUSDC"
-export MINTER_ADDRESS=0xMinter                                 # defaults to $ADMIN_ADDRESS
+export OPERATOR_ADDRESS=0xOperator                                 # defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 
 # 2. ...or, deploying by hand, seat the roles yourself. Run this from the DEPLOYER key —
 #    it is the only address holding DEFAULT_ADMIN_ROLE until this call hands it over.
-cast send $TOKEN "initialize(address,address)" $ADMIN $MINTER \
+cast send $TOKEN "initialize(address,address)" $ADMIN $OPERATOR \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
 
 # 3. Issue straight to the holder
 cast send $TOKEN "encode(address,uint256)" $HOLDER 1000ether \
-  --rpc-url $RPC_URL --private-key $MINTER_PK
+  --rpc-url $RPC_URL --private-key $OPERATOR_PK
 
 # 4. Open the destination. Until this lands, step 5 reverts with
 #    TransferDestinationNotAllowed — the list starts empty and the deploy seeds nothing.
@@ -238,9 +238,9 @@ cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
 #    guardRetract, which refuses the burn unless the chain's supply still matches the
 #    reading the amount was decided against; adminRetract is the unguarded fallback.
 cast send $TOKEN "guardRetract(address,uint256,uint256)" $HOLDER 100ether $SUPPLY_YOU_READ \
-  --rpc-url $RPC_URL --private-key $MINTER_PK
+  --rpc-url $RPC_URL --private-key $OPERATOR_PK
 cast send $TOKEN "adminRetract(address,uint256)" $HOLDER 100ether \
-  --rpc-url $RPC_URL --private-key $MINTER_PK
+  --rpc-url $RPC_URL --private-key $OPERATOR_PK
 ```
 
 ## Security
@@ -265,7 +265,7 @@ have deleted that announcement and forced the governance key to stay hot.
 
 Between deploy and `initialize`, `DEFAULT_ADMIN_ROLE` sits on the **deployer
 key**. Keep that window short and the key controlled: it is the one address that
-can decide who the minter will be.
+can decide who the operator will be.
 
 In production:
 
@@ -278,10 +278,10 @@ In production:
 - Do not grant `DEFAULT_ADMIN_ROLE` or `OPERATOR_ROLE` to EOAs in production.
 - **Never renounce the last `DEFAULT_ADMIN_ROLE` holder.** The role is its own
   role admin, so once the last holder is gone no party can bootstrap a new one
-  and the role graph freezes permanently — no new minter, ever. **The transfer
+  and the role graph freezes permanently — no new operator, ever. **The transfer
   allowlist freezes with it:** balances move only along routes opened before
   that block, and no destination can ever be added again. If the list was empty,
-  no transfer will ever succeed. And if the existing minter keys are also lost,
+  no transfer will ever succeed. And if the existing operator keys are also lost,
   nothing can ever be redeemed either. Keep at least two holders of each role.
 - **Open destinations deliberately, and audit `DestinationAllowedSet`.** It is
   emitted on every write including a no-op, so the log is the complete record of
@@ -314,7 +314,7 @@ export DEPLOYER_PRIVATE_KEY=0x...
 export DECIMALS=6                                  # optional, defaults to 18
 export TOKEN_NAME="Strands Custody USDC (BitGo)"   # optional, defaults to "Strands Custody Token"
 export TOKEN_SYMBOL="scUSDC"                       # optional, defaults to "SCT"
-export MINTER_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
+export OPERATOR_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --broadcast \

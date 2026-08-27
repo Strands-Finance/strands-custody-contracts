@@ -20,7 +20,7 @@ abstract contract BaseTest is Test {
     StrandsDACAP internal token;
 
     address internal admin = makeAddr("admin");
-    address internal minter = makeAddr("minter");
+    address internal operator = makeAddr("operator");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
@@ -59,9 +59,9 @@ abstract contract BaseTest is Test {
 
         // Hands DEFAULT_ADMIN_ROLE to `admin` and revokes this contract's, so `admin` is the ONLY holder —
         // `AdminLifecycle.t.sol`'s "last admin" assertions depend on that being exactly true.
-        token.initialize(admin, minter);
+        token.initialize(admin, operator);
 
-        vm.prank(minter);
+        vm.prank(operator);
         token.encode(alice, INITIAL_MINT);
     }
 
@@ -72,10 +72,10 @@ abstract contract BaseTest is Test {
     ///      keccak constants, so the cached OPERATOR_ROLE applies to any instance.
     function _deployWithDecimals(uint8 decimals_) internal returns (StrandsDACAP t) {
         t = new StrandsDACAP(decimals_, "Strands Custody Fixture", "scFIX");
-        t.initialize(admin, minter);
+        t.initialize(admin, operator);
     }
 
-    /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no minter, and this test contract still holding
+    /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no operator, and this test contract still holding
     ///      DEFAULT_ADMIN_ROLE. The state a deploy leaves behind before its second transaction.
     function _deployUninitialized() internal returns (StrandsDACAP t) {
         t = new StrandsDACAP(18, NAME, SYMBOL);
@@ -108,7 +108,7 @@ abstract contract BaseTest is Test {
         _expectMissingRole(caller, DEFAULT_ADMIN_ROLE);
     }
 
-    function _expectNotMinter(address caller) internal {
+    function _expectNotOperator(address caller) internal {
         _expectMissingRole(caller, OPERATOR_ROLE);
     }
 
@@ -140,8 +140,8 @@ abstract contract BaseTest is Test {
 
     // ---------- event expectations ----------
 
-    /// @dev `by` rather than `minter` — the fixture already binds that name, and the burner is only ever the
-    ///      fixture's minter by convention, not by anything the event itself requires.
+    /// @dev `by` rather than `operator` — the fixture already binds that name, and the burner is only ever the
+    ///      fixture's operator by convention, not by anything the event itself requires.
     function _expectBurnedEvent(address by, address from, uint256 amount) internal {
         vm.expectEmit(true, true, false, true, address(token));
         emit Retracted(by, from, amount);
