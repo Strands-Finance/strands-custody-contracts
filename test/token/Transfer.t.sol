@@ -208,9 +208,8 @@ contract TransferTest is BaseTest {
     ///      leave that test green.
     function test_AllowlistSelectors_HaveADispatchEntry() public {
         vm.prank(admin);
-        (bool wrote,) = address(token).call(
-            abi.encodeWithSelector(bytes4(keccak256("setDestinationAllowed(address,bool)")), carol, true)
-        );
+        (bool wrote,) = address(token)
+            .call(abi.encodeWithSelector(bytes4(keccak256("setDestinationAllowed(address,bool)")), carol, true));
         assertTrue(wrote, "the setter must be dispatchable");
 
         (bool read, bytes memory data) =
