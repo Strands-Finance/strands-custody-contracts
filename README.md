@@ -4,32 +4,32 @@ Custodial ERC20 token for the Strands platform.
 
 ## Overview
 
-`StrandsCustodyToken` is an OpenZeppelin `ERC20Burnable` token gated by
+`StrandsDACAP` is an OpenZeppelin `ERC20` token gated by
 `AccessControl`. A balance here is a **claim against an off-chain ledger**, so
 destroying supply is privileged. A holder cannot redeem themselves, and cannot
-delegate that power to anyone else via an ERC20 allowance.
+delegate that power to anyone else via an ERC20 allowance — no burn path
+consults an allowance at all.
 
-Two invariants to rely on: **every burn emits `Burned`**, and **every burn is a
-`MINTER_ROLE` holder**. One operating role owns supply in both directions:
+Two invariants to rely on: **every burn emits `Retracted`**, and **every burn is
+an `OPERATOR_ROLE` holder**. One operating role owns supply in both directions:
 
 | Entrypoint | Role | Direction | Supply-checked |
 | --- | --- | --- | --- |
-| `mint(to, amount)` | `MINTER_ROLE` | up | no |
-| `guardMint(to, amount, estimatedSupply)` | `MINTER_ROLE` | up | yes |
-| `guardBurn(from, amount, estimatedSupply)` | `MINTER_ROLE` | down | yes |
-| `adminBurn(from, amount)` | `MINTER_ROLE` | down | no |
-| `burn(amount)` | `MINTER_ROLE` | down | no |
-| `burnFrom(from, amount)` | `MINTER_ROLE` | down | no |
+| `encode(to, amount)` | `OPERATOR_ROLE` | up | no |
+| `guardEncode(to, amount, estimatedSupply)` | `OPERATOR_ROLE` | up | yes |
+| `guardRetract(from, amount, estimatedSupply)` | `OPERATOR_ROLE` | down | yes |
+| `adminRetract(from, amount)` | `OPERATOR_ROLE` | down | no |
 
 The guarded pair is what the backend sends. Both take the caller's
 `totalSupply()` reading and revert with `SupplyMismatch` unless the chain still
-agrees, so a stale read cannot move supply in either direction. `adminBurn` is
-the unguarded operator escape hatch, and `burn` / `burnFrom` are OZ's inherited
-pair, gated to the same role rather than left silently reachable by holders. All
-four burn paths emit `Burned`, so a reconciler tracks every unit of destroyed
-supply from that one event.
+agrees, so a stale read cannot move supply in either direction. `adminRetract`
+is the unguarded operator escape hatch. The contract inherits plain `ERC20`
+rather than `ERC20Burnable`, so there is no holder-reachable `burn` /
+`burnFrom` — the two paths above are the whole burn surface, and both emit
+`Retracted`, so a reconciler tracks every unit of destroyed supply from that
+one event.
 
-The practical consequence: **`revokeRole(MINTER_ROLE, ...)` is the single lever
+The practical consequence: **`revokeRole(OPERATOR_ROLE, ...)` is the single lever
 that stops minting AND burning.** There is no burn-only revoke. That is the
 trade taken when `CUSTODIAN_ROLE` was removed — one operating key instead of
 two, matching OpenZeppelin's model of narrow named roles for operations and
@@ -85,7 +85,7 @@ undo that property.
 
 The constructor takes only the token's own metadata and grants
 `DEFAULT_ADMIN_ROLE` to **the deployer**. Both roles are seated by a separate
-`initialize(admin, minter)`, which is `onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs
+`initialize(admin, encoder)`, which is `onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs
 exactly once.
 
 Both guards are load-bearing. The role check is what makes `initialize`
@@ -94,15 +94,20 @@ only a one-shot guard the first stranger to call would own the token's mint and
 burn authority. The one-shot guard is what stops an admin silently re-seating a
 different minter later under a call named "initialize".
 
-Between the two transactions the token is **inert** (nobody holds `MINTER_ROLE`,
+Between the two transactions the token is **inert** (nobody holds `OPERATOR_ROLE`,
 so every privileged entrypoint reverts) and **recoverable** (the deployer still
 holds admin and can finish the deploy). `initialize` revokes the deployer's own
 admin unless it *is* the admin, so the role graph afterwards is exactly what the
 arguments say.
 
 `initialize` is **not idempotent** — a second call reverts with
-`InvalidInitialization()`. A caller with a retry path must read `hasRole` first
-rather than re-calling.
+`InvalidInitialization()`. A caller with a retry path must read `initialized()`
+first rather than re-calling.
+
+**The token is not proxy-safe.** `decimals` is an immutable and name/symbol are
+constructor-set, so behind a proxy all three would read empty. `Initializable`
+is used only as a call-once guard on `initialize`, not as an upgradeability
+story — deploy directly, never behind a proxy.
 
 ## Token
 
@@ -111,7 +116,7 @@ rather than re-calling.
 | Name | Set at deploy time via `name_`, e.g. `Strands Custody USDC (BitGo)` |
 | Symbol | Set at deploy time via `symbol_`, e.g. `scUSDC` |
 | Decimals | Set at deploy time via `decimals_` (e.g. USDC = 6, BTC = 8, ETH = 18) |
-| Initial supply | `0` (mint via `MINTER_ROLE`) |
+| Initial supply | `0` (mint via `OPERATOR_ROLE`) |
 
 One token is deployed per (holder wallet, custodian, asset), so the name and
 symbol identify **which asset at which custodian** — enough to tell a USDC token
@@ -125,19 +130,19 @@ The constructor rejects an empty `name_` or `symbol_` for that reason.
 ## Roles
 
 Two roles, following OpenZeppelin's own division: `DEFAULT_ADMIN_ROLE` is
-**governance** and `MINTER_ROLE` is the single **operating** capability.
+**governance** and `OPERATOR_ROLE` is the single **operating** capability.
 
 | Role | Powers |
 | --- | --- |
 | `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and call `initialize` once. **No power over balances.** |
-| `MINTER_ROLE` | Everything that moves supply: `mint`, `guardMint`, `guardBurn`, `adminBurn`, `burn`, `burnFrom` |
+| `OPERATOR_ROLE` | Everything that moves supply: `encode`, `guardEncode`, `guardRetract`, `adminRetract` |
 
 The constructor grants `DEFAULT_ADMIN_ROLE` to the deployer; `initialize` then
 seats both roles at whichever addresses (ideally multisigs / timelocks) should
 hold them, and hands admin on.
 
-`MINTER_ROLE` reaches every burn path as well as every mint path — the name is
-narrower than the capability. It is deliberate: `AccessControl` warns that
+`OPERATOR_ROLE` reaches every burn path as well as every mint path. It is
+deliberate: `AccessControl` warns that
 `DEFAULT_ADMIN_ROLE` is its own admin and should be secured accordingly, so
 folding an operational burn onto it would force the governance key to stay hot.
 Keeping burning on the operating role is what lets the admin key stay cold and
@@ -148,24 +153,22 @@ keeps every escalation visible as a `RoleGranted`.
 ```solidity
 constructor(uint8 decimals_, string memory name_, string memory symbol_);  // admin -> msg.sender
 
-function initialize(address admin, address minter) external; // DEFAULT_ADMIN_ROLE, once
+function initialize(address admin, address encoder) external; // DEFAULT_ADMIN_ROLE, once
 
-function mint(address to, uint256 amount) external;          // MINTER_ROLE
-function guardMint(address to, uint256 amount, uint256 estimatedSupply) external;   // MINTER_ROLE
-function guardBurn(address from, uint256 amount, uint256 estimatedSupply) external; // MINTER_ROLE
-function adminBurn(address from, uint256 amount) external;   // MINTER_ROLE — no allowance needed
-function burn(uint256 amount) public;                        // MINTER_ROLE (overridden)
-function burnFrom(address from, uint256 amount) public;      // MINTER_ROLE (overridden), spends allowance
+function encode(address to, uint256 amount) external;         // OPERATOR_ROLE
+function guardEncode(address to, uint256 amount, uint256 estimatedSupply) external;   // OPERATOR_ROLE
+function guardRetract(address from, uint256 amount, uint256 estimatedSupply) external; // OPERATOR_ROLE
+function adminRetract(address from, uint256 amount) external; // OPERATOR_ROLE — no allowance needed
 
-event Burned(address indexed burnedBy, address indexed from, uint256 amount);
+event Retracted(address indexed retractedBy, address indexed from, uint256 amount);
 event Initialized(uint64 version);
 
 error SupplyMismatch(uint256 actualSupply, uint256 estimatedSupply);
 ```
 
-### `guardMint` — mint against a supply you have already read
+### `guardEncode` — mint against a supply you have already read
 
-`mint` issues whatever it is told to. `guardMint` issues it only if
+`encode` issues whatever it is told to. `guardEncode` issues it only if
 `totalSupply()` still equals `estimatedSupply`, reverting with
 `SupplyMismatch(actualSupply, estimatedSupply)` otherwise.
 
@@ -177,21 +180,19 @@ the delta wrong by exactly the same margin, and nothing the caller can observe
 would say so. Passing the read back in makes that assumption enforceable rather
 than assumed.
 
-`estimatedSupply` is the **pre-mint** supply, in raw base units — `decimals()`
-is display metadata and never enters the comparison. A fresh deployment
+`estimatedSupply` is the **pre-mint** supply (and for `guardRetract`, the
+**pre-burn** supply), in raw base units — `decimals()` is display metadata and
+never enters the comparison. A fresh deployment
 therefore passes `0`, and `0` is an ordinary value rather than a "skip the
 check" sentinel: it is honoured only when the supply really is zero. The revert
 carries `actualSupply`, so the corrected estimate is in the revert data and a
 caller can re-read and retry.
 
-Standard ERC20, ERC20Burnable and AccessControl surfaces are inherited, with two
-behavioral changes:
+Standard ERC20 and AccessControl surfaces are inherited, with two changes:
 
-- `burn` and `burnFrom` are `MINTER_ROLE`-only and emit `Burned`. They keep
-  their standard selectors, so an integration calling them still compiles — it
-  will revert with `AccessControlUnauthorizedAccount` unless the caller holds
-  `MINTER_ROLE`. `burnFrom` still spends the allowance, and the role check runs
-  *before* it, so a rejected call leaves the allowance untouched.
+- There is no `burn` / `burnFrom`: the contract does not inherit
+  `ERC20Burnable`, so those selectors have no dispatch entry at all. The only
+  burn paths are `guardRetract` and `adminRetract`, both `OPERATOR_ROLE`-only.
 - `transfer` and `transferFrom` refuse any destination the admin has not opened,
   reverting with `TransferDestinationNotAllowed`. Same selectors, same
   signatures — an integration compiles unchanged and fails at runtime until the
@@ -221,7 +222,7 @@ cast send $TOKEN "initialize(address,address)" $ADMIN $MINTER \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
 
 # 3. Issue straight to the holder
-cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
+cast send $TOKEN "encode(address,uint256)" $HOLDER 1000ether \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 
 # 4. Open the destination. Until this lands, step 5 reverts with
@@ -233,30 +234,30 @@ cast send $TOKEN "setDestinationAllowed(address,bool)" $DEST true \
 cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
   --rpc-url $RPC_URL --private-key $HOLDER_PK
 
-# 6. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Prefer
-#    guardBurn, which refuses the burn unless the chain's supply still matches the
-#    reading the amount was decided against; adminBurn is the unguarded fallback.
-cast send $TOKEN "guardBurn(address,uint256,uint256)" $HOLDER 100ether $SUPPLY_YOU_READ \
+# 6. Redeem — OPERATOR_ROLE only; the holder cannot burn their own balance. Prefer
+#    guardRetract, which refuses the burn unless the chain's supply still matches the
+#    reading the amount was decided against; adminRetract is the unguarded fallback.
+cast send $TOKEN "guardRetract(address,uint256,uint256)" $HOLDER 100ether $SUPPLY_YOU_READ \
   --rpc-url $RPC_URL --private-key $MINTER_PK
-cast send $TOKEN "adminBurn(address,uint256)" $HOLDER 100ether \
+cast send $TOKEN "adminRetract(address,uint256)" $HOLDER 100ether \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 ```
 
 ## Security
 
-`MINTER_ROLE` is a **supply-destruction role as well as an issuance one**. A
-threat model that treats it as issuance-only is wrong: it reaches `adminBurn`,
-`guardBurn`, `burn` and `burnFrom`, so a compromised minter key can destroy any
-balance as easily as it can inflate one. The upside of that concentration is a
-single, unambiguous kill switch — `revokeRole(MINTER_ROLE, ...)` stops both
+`OPERATOR_ROLE` is a **supply-destruction role as well as an issuance one**. A
+threat model that treats it as issuance-only is wrong: it reaches `adminRetract`
+and `guardRetract`, so a compromised operator key can destroy any balance as
+easily as it can inflate one. The upside of that concentration is a
+single, unambiguous kill switch — `revokeRole(OPERATOR_ROLE, ...)` stops both
 directions in one transaction. The downside is that there is no way to stop
 burning while minting continues, or the reverse.
 
-There is no self-service exit. If every `MINTER_ROLE` key is lost, no balance can
-ever be redeemed.
+There is no self-service exit. If every `OPERATOR_ROLE` key is lost, no balance
+can ever be redeemed.
 
 `DEFAULT_ADMIN_ROLE` holds no power over balances. Its reach is the role graph:
-it can grant itself `MINTER_ROLE` and then move supply, but that grant is a
+it can grant itself `OPERATOR_ROLE` and then move supply, but that grant is a
 separate transaction and lands on-chain as `RoleGranted`, so the escalation is
 visible rather than standing. This is the reason the burn surface was NOT folded
 onto `DEFAULT_ADMIN_ROLE` when `CUSTODIAN_ROLE` was removed — doing so would
@@ -268,13 +269,13 @@ can decide who the minter will be.
 
 In production:
 
-- Hold `MINTER_ROLE` in a multisig with operational signers only, and keep at
+- Hold `OPERATOR_ROLE` in a multisig with operational signers only, and keep at
   least two holders of it. It is the only key that can redeem.
 - Hold `DEFAULT_ADMIN_ROLE` in a timelock-controlled multisig, separate from the
-  minter. The timelock is what gives holders visibility of a `MINTER_ROLE` grant
-  before it settles. OpenZeppelin's `AccessControl` warns that this role is its
-  own admin and needs extra precautions; treat it as governance only.
-- Do not grant `DEFAULT_ADMIN_ROLE` or `MINTER_ROLE` to EOAs in production.
+  operator. The timelock is what gives holders visibility of an `OPERATOR_ROLE`
+  grant before it settles. OpenZeppelin's `AccessControl` warns that this role is
+  its own admin and needs extra precautions; treat it as governance only.
+- Do not grant `DEFAULT_ADMIN_ROLE` or `OPERATOR_ROLE` to EOAs in production.
 - **Never renounce the last `DEFAULT_ADMIN_ROLE` holder.** The role is its own
   role admin, so once the last holder is gone no party can bootstrap a new one
   and the role graph freezes permanently — no new minter, ever. **The transfer
@@ -286,9 +287,9 @@ In production:
   emitted on every write including a no-op, so the log is the complete record of
   what the admin asserted — there is no on-chain enumeration of the list, so
   that log is the only way to reconstruct it.
-- Monitor `Burned`. All four paths that destroy supply emit it, so it is the
-  complete record of redemption, and `burnedBy` always names a `MINTER_ROLE`
-  holder.
+- Monitor `Retracted`. Both paths that destroy supply emit it, so it is the
+  complete record of redemption, and `retractedBy` always names an
+  `OPERATOR_ROLE` holder.
 - **Initialize in the same operation as the deploy.** An uninitialized token is
   harmless but unfinished, and the only key that can complete it is the one that
   deployed it.
@@ -329,7 +330,7 @@ these arguments exist to fix.
 
 The script deploys and initializes in one broadcast, so the token is live when
 it returns. Deploying by hand instead means the deployer key must follow up with
-`initialize(admin, minter)` — until it does, the token is inert.
+`initialize(admin, encoder)` — until it does, the token is inert.
 
 ## .NET / Nethereum code generation
 
@@ -337,19 +338,19 @@ Pre-extracted artifacts in [`abi/`](./abi):
 
 | File | Format | Use with |
 | --- | --- | --- |
-| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
-| `abi/StrandsCustodyToken.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
-| `abi/StrandsCustodyToken.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
+| `abi/StrandsDACAP.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
+| `abi/StrandsDACAP.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
+| `abi/StrandsDACAP.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 
 ### Strands ContractInterfaceGenerator
 
-Copy `abi/StrandsCustodyToken.json` into the directory the generator scans
-(e.g. `Sources/Strands/StrandsCustodyToken/StrandsCustodyToken.json`) and run
+Copy `abi/StrandsDACAP.json` into the directory the generator scans
+(e.g. `Sources/Strands/StrandsDACAP/StrandsDACAP.json`) and run
 the CIG normally. The artifact carries `bytecode` inline, so the copy is the
 whole sync — the generator bakes that value into
-`StrandsCustodyTokenDeploymentBase.BYTECODE`, and splicing the ABI and the
+`StrandsDACAPDeploymentBase.BYTECODE`, and splicing the ABI and the
 creation bytecode from separate files is how the two drift apart. If/when the
-contract is deployed, add a sibling `StrandsCustodyToken-deployments.json` of
+contract is deployed, add a sibling `StrandsDACAP-deployments.json` of
 shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 
 ### Plain Nethereum.Generator.Console
@@ -357,28 +358,28 @@ shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 ```bash
 dotnet tool install -g Nethereum.Generator.Console
 Nethereum.Generator.Console generate from-abi \
-  -abi abi/StrandsCustodyToken.abi \
-  -bin abi/StrandsCustodyToken.bin \
+  -abi abi/StrandsDACAP.abi \
+  -bin abi/StrandsDACAP.bin \
   -o   ./StrandsCustody.Contracts \
   -ns  StrandsCustody.Contracts \
-  -cn  StrandsCustodyToken
+  -cn  StrandsDACAP
 ```
 
 ### Regenerating after a contract change
 
 ```bash
 forge build
-forge inspect StrandsCustodyToken abi --json > abi/StrandsCustodyToken.abi
-forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > abi/StrandsCustodyToken.bin
+forge inspect StrandsDACAP abi --json > abi/StrandsDACAP.abi
+forge inspect StrandsDACAP bytecode | sed 's/^0x//' > abi/StrandsDACAP.bin
 python3 - <<'PY'
 import json
-abi = json.load(open("abi/StrandsCustodyToken.abi"))
-bytecode = open("abi/StrandsCustodyToken.bin").read().strip()
-with open("abi/StrandsCustodyToken.json", "w") as f:
+abi = json.load(open("abi/StrandsDACAP.abi"))
+bytecode = open("abi/StrandsDACAP.bin").read().strip()
+with open("abi/StrandsDACAP.json", "w") as f:
     json.dump({
         "_format": "hh-sol-artifact-1",
-        "contractName": "StrandsCustodyToken",
-        "sourceName":   "src/StrandsCustodyToken.sol",
+        "contractName": "StrandsDACAP",
+        "sourceName":   "src/StrandsDACAP.sol",
         "abi": abi,
         "bytecode": "0x" + bytecode,
     }, f, indent=2)
@@ -386,10 +387,10 @@ with open("abi/StrandsCustodyToken.json", "w") as f:
 PY
 ```
 
-Then copy `abi/StrandsCustodyToken.json` over the consumer's generator source and
+Then copy `abi/StrandsDACAP.json` over the consumer's generator source and
 re-run the generator — updating one without the other leaves the generated
 `BYTECODE` constant deploying an older contract.
 
 ## License
 
-MIT
+BUSL-1.1

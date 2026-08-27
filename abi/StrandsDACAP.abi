@@ -35,7 +35,7 @@
   },
   {
     "type": "function",
-    "name": "MINTER_ROLE",
+    "name": "OPERATOR_ROLE",
     "inputs": [],
     "outputs": [
       {
@@ -48,7 +48,7 @@
   },
   {
     "type": "function",
-    "name": "adminBurn",
+    "name": "adminRetract",
     "inputs": [
       {
         "name": "from",
@@ -152,23 +152,23 @@
   },
   {
     "type": "function",
-    "name": "burn",
-    "inputs": [
+    "name": "decimals",
+    "inputs": [],
+    "outputs": [
       {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "burnFrom",
+    "name": "encode",
     "inputs": [
       {
-        "name": "from",
+        "name": "to",
         "type": "address",
         "internalType": "address"
       },
@@ -180,19 +180,6 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "decimals",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "uint8"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -233,10 +220,10 @@
   },
   {
     "type": "function",
-    "name": "guardBurn",
+    "name": "guardEncode",
     "inputs": [
       {
-        "name": "from",
+        "name": "to",
         "type": "address",
         "internalType": "address"
       },
@@ -256,10 +243,10 @@
   },
   {
     "type": "function",
-    "name": "guardMint",
+    "name": "guardRetract",
     "inputs": [
       {
-        "name": "to",
+        "name": "from",
         "type": "address",
         "internalType": "address"
       },
@@ -311,7 +298,7 @@
         "internalType": "address"
       },
       {
-        "name": "minter",
+        "name": "encoder",
         "type": "address",
         "internalType": "address"
       }
@@ -331,24 +318,6 @@
       }
     ],
     "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "mint",
-    "inputs": [
-      {
-        "name": "to",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -542,31 +511,6 @@
   },
   {
     "type": "event",
-    "name": "Burned",
-    "inputs": [
-      {
-        "name": "burnedBy",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "from",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "DestinationAllowedSet",
     "inputs": [
       {
@@ -593,6 +537,31 @@
         "type": "uint64",
         "indexed": false,
         "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Retracted",
+    "inputs": [
+      {
+        "name": "retractedBy",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "from",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
