@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import { stdError } from "forge-std/StdError.sol";
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { BaseTest } from "../Base.t.sol";
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 
 /// @notice `guardBurn` — the supply-checked burn entrypoint and its MINTER_ROLE gate.
 ///
@@ -176,7 +176,7 @@ contract GuardBurnTest is BaseTest {
     /// @dev A zero-amount burn against an EMPTY token: both zeros at once, on the one supply where a zero
     ///      estimate is right. The mint-side equivalent is `test_GuardMint_ZeroAmountAndZeroEstimate_...`.
     function test_GuardBurn_ZeroAmountAndZeroEstimate_OnAnEmptyToken() public {
-        StrandsCustodyToken t = _deployWithDecimals(18);
+        StrandsDACAP t = _deployWithDecimals(18);
 
         vm.prank(minter);
         t.guardBurn(alice, 0, 0);
@@ -304,7 +304,7 @@ contract GuardBurnTest is BaseTest {
     ///      supply from a holder who holds all of it is ERC20's insufficient-balance error, not a panic;
     ///      the panic case is the mint side's.
     function test_GuardBurn_AtMaxSupply_StillGates() public {
-        StrandsCustodyToken t = _deployWithDecimals(18);
+        StrandsDACAP t = _deployWithDecimals(18);
 
         vm.prank(minter);
         t.guardMint(bob, type(uint256).max, 0);
@@ -469,7 +469,7 @@ contract GuardBurnTest is BaseTest {
     ///      produce the same numbers at 6, 8 and 18. `amount` is deliberately not a whole number of display
     ///      units at any magnitude, so a scaling fault cannot coincidentally land on the right answer.
     function _assertGuardBurnInvariantsAt(uint8 decimals_) private {
-        StrandsCustodyToken t = _deployWithDecimals(decimals_);
+        StrandsDACAP t = _deployWithDecimals(decimals_);
         assertEq(t.decimals(), decimals_, "precondition: the token reports the magnitude under test");
 
         uint256 amount = 123_456_789;
@@ -537,7 +537,7 @@ contract GuardBurnTest is BaseTest {
     ///      would pass 5 where the chain holds 5_000_000. The comparison is raw base units, so that must
     ///      revert rather than read as "5 USDC, close enough" — the estimate carries no scale of its own.
     function test_GuardBurn_6dp_RejectsADecimalAdjustedEstimate() public {
-        StrandsCustodyToken usdc = _deployWithDecimals(6);
+        StrandsDACAP usdc = _deployWithDecimals(6);
         vm.prank(minter);
         usdc.guardMint(alice, 5 * ONE_USDC, 0);
         assertEq(usdc.totalSupply(), 5 * ONE_USDC, "precondition: five whole USDC, i.e. 5_000_000 base units");
@@ -554,8 +554,8 @@ contract GuardBurnTest is BaseTest {
     ///      arithmetic. The burns are what give this teeth — their estimates are non-zero, and a comparison
     ///      scaled by decimals() would divide them to a different number and revert.
     function test_GuardBurn_DecimalsDoNotAffectSupplyArithmetic() public {
-        StrandsCustodyToken sixDp = _deployWithDecimals(6);
-        StrandsCustodyToken eighteenDp = _deployWithDecimals(18);
+        StrandsDACAP sixDp = _deployWithDecimals(6);
+        StrandsDACAP eighteenDp = _deployWithDecimals(18);
         uint256 amount = 123_456_789;
 
         vm.startPrank(minter);

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import { GuardMintBase } from "./GuardMintBase.t.sol";
-import { StrandsCustodyToken } from "../../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../../src/StrandsDACAP.sol";
 
 /// @notice None of the claims the other files in this folder make depends on `decimals()`.
 /// @dev    Every other suite here runs on the 18-dp fixture, and `Metadata.t.sol` only checks that `decimals()`
@@ -28,7 +28,7 @@ contract GuardMintDecimalsTest is GuardMintBase {
     ///      the same numbers at 6, 8 and 18. `amount` is deliberately not a whole number of display units at any
     ///      magnitude, so a scaling fault cannot coincidentally land on the right answer.
     function _assertGuardMintInvariantsAt(uint8 decimals_) private {
-        StrandsCustodyToken t = _deployWithDecimals(decimals_);
+        StrandsDACAP t = _deployWithDecimals(decimals_);
         assertEq(t.decimals(), decimals_, "precondition: the token reports the magnitude under test");
         assertEq(t.totalSupply(), 0, "precondition: a fresh token has no supply");
 
@@ -99,7 +99,7 @@ contract GuardMintDecimalsTest is GuardMintBase {
     ///      pass 5 where the chain holds 5_000_000. The comparison is raw base units, so that must revert rather
     ///      than read as "5 USDC, close enough" — the estimate carries no scale of its own to reconcile.
     function test_GuardMint_6dp_RejectsADecimalAdjustedEstimate() public {
-        StrandsCustodyToken usdc = _deployWithDecimals(6);
+        StrandsDACAP usdc = _deployWithDecimals(6);
         vm.prank(minter);
         usdc.guardMint(alice, 5 * ONE_USDC, 0);
         assertEq(usdc.totalSupply(), 5 * ONE_USDC, "precondition: five whole USDC, i.e. 5_000_000 base units");
@@ -117,8 +117,8 @@ contract GuardMintDecimalsTest is GuardMintBase {
     ///      non-zero, and a comparison scaled by decimals() would divide that estimate to a different number and
     ///      revert. A single mint from zero cannot detect the fault, because zero survives any division.
     function test_GuardMint_DecimalsDoNotAffectSupplyArithmetic() public {
-        StrandsCustodyToken sixDp = _deployWithDecimals(6);
-        StrandsCustodyToken eighteenDp = _deployWithDecimals(18);
+        StrandsDACAP sixDp = _deployWithDecimals(6);
+        StrandsDACAP eighteenDp = _deployWithDecimals(18);
         uint256 amount = 123_456_789;
 
         vm.startPrank(minter);
