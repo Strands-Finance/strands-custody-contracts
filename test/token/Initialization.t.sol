@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { StrandsCustodyToken } from "../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 import { BaseTest } from "../Base.t.sol";
 
 /// @notice Deployment is two transactions — `constructor` then `initialize` — and this suite owns the gap
@@ -24,7 +24,7 @@ contract InitializationTest is BaseTest {
     ///      `initialize` safe to leave external. Asserting the deployer holds it and the eventual admin does
     ///      not is what distinguishes this from the old four-argument constructor.
     function test_Constructor_GrantsAdminToTheDeployerAndNothingElse() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, address(this)), "the deployer is the bootstrap admin");
         assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, admin), "the eventual admin arrives only via initialize");
@@ -35,7 +35,7 @@ contract InitializationTest is BaseTest {
     /// @dev The metadata is still the constructor's business, and still immutable. Pinned here because the
     ///      constructor lost a parameter and a mis-ordered argument list would compile.
     function test_Constructor_StillSetsMetadata() public {
-        StrandsCustodyToken fresh = new StrandsCustodyToken(6, "Strands Custody USDC (BitGo)", "scUSDC");
+        StrandsDACAP fresh = new StrandsDACAP(6, "Strands Custody USDC (BitGo)", "scUSDC");
 
         assertEq(fresh.decimals(), 6);
         assertEq(fresh.name(), "Strands Custody USDC (BitGo)");
@@ -46,7 +46,7 @@ contract InitializationTest is BaseTest {
     ///      landed can move no supply, for anyone, through any entrypoint. Every actor is tried — including
     ///      the deployer, who holds admin and might be assumed to inherit the operating role with it.
     function test_UninitializedToken_IsInert() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         address[4] memory parties = [address(this), admin, minter, alice];
         for (uint256 i = 0; i < parties.length; i++) {
@@ -79,7 +79,7 @@ contract InitializationTest is BaseTest {
     /// @dev Inert is not bricked. The deployer still holds admin, so the deploy is recoverable by finishing
     ///      it — no redeploy, no orphaned contract.
     function test_UninitializedToken_IsStillRecoverableByTheDeployer() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         fresh.initialize(admin, minter);
 
@@ -91,7 +91,7 @@ contract InitializationTest is BaseTest {
     // ---------- what initialize seats ----------
 
     function test_Initialize_SeatsBothRoles() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         fresh.initialize(admin, minter);
 
@@ -104,7 +104,7 @@ contract InitializationTest is BaseTest {
     ///      the assertion that keeps governance and operations separable at all, since an `initialize` that
     ///      handed both to one argument would look identical from `hasRole(DEFAULT_ADMIN_ROLE, admin)` alone.
     function test_Initialize_DoesNotCrossWireTheRoles() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         fresh.initialize(admin, minter);
 
@@ -113,7 +113,7 @@ contract InitializationTest is BaseTest {
     }
 
     function test_Initialize_EmitsInitialized() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         vm.expectEmit(false, false, false, true, address(fresh));
         emit Initialized(1);
@@ -124,7 +124,7 @@ contract InitializationTest is BaseTest {
     /// @dev Hand off, do not accumulate. A deployer that kept admin would be standing privilege nobody
     ///      declared — exactly the thing an auditor reading `initialize`'s arguments would not expect.
     function test_Initialize_RevokesTheDeployersAdminWhenAdminIsSomeoneElse() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         fresh.initialize(admin, minter);
 
@@ -139,7 +139,7 @@ contract InitializationTest is BaseTest {
     ///      be SKIPPED there, not performed-and-undone — a token whose only admin revoked itself would have a
     ///      frozen role graph from birth.
     function test_Initialize_KeepsTheDeployersAdminWhenItIsTheAdmin() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         fresh.initialize(address(this), address(this));
 
@@ -153,7 +153,7 @@ contract InitializationTest is BaseTest {
     /// @dev The whole point, end to end: the seated role must actually WORK, in both directions. `hasRole`
     ///      reading true proves the mapping was written, not that any entrypoint accepts the holder.
     function test_Initialize_LeavesTheTokenMintableAndBurnableEndToEnd() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
         fresh.initialize(admin, minter);
 
         vm.startPrank(minter);
@@ -172,7 +172,7 @@ contract InitializationTest is BaseTest {
     ///      deploy is visible the moment it lands; if `initializer` were the only guard, the first stranger to
     ///      call would own the token's mint and burn authority outright.
     function test_Initialize_CannotBeFrontRunByAStranger() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
         address attacker = makeAddr("attacker");
 
         vm.prank(attacker);
@@ -191,7 +191,7 @@ contract InitializationTest is BaseTest {
     /// @dev No address is special. Every caller but the deployer is refused, at every argument shape.
     function testFuzz_ArbitraryNonDeployer_CannotInitialize(address caller) public {
         vm.assume(caller != address(this));
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         vm.prank(caller);
         _expectMissingRole(caller, DEFAULT_ADMIN_ROLE);
@@ -203,7 +203,7 @@ contract InitializationTest is BaseTest {
     /// @dev The recovery path for a deploy from a key that is being retired: admin can be rotated BEFORE
     ///      initialize, and the successor inherits the right to finish the deploy.
     function test_Initialize_MayBeCompletedByARotatedAdmin() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         fresh.grantRole(DEFAULT_ADMIN_ROLE, carol);
         fresh.renounceRole(DEFAULT_ADMIN_ROLE, address(this));
@@ -218,7 +218,7 @@ contract InitializationTest is BaseTest {
     // ---------- exactly once ----------
 
     function test_Initialize_RevertsOnSecondCall() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
         fresh.initialize(admin, minter);
 
         vm.prank(admin);
@@ -269,7 +269,7 @@ contract InitializationTest is BaseTest {
     /// @dev The read the whole two-transaction deploy rests on for anyone retrying it. Both sides of the gap
     ///      in one test, because a getter stuck at either constant would pass a one-sided assertion.
     function test_Initialized_ReportsBothSidesOfTheGap() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
         assertFalse(fresh.initialized(), "the constructor alone does not initialize");
 
         fresh.initialize(admin, minter);
@@ -280,7 +280,7 @@ contract InitializationTest is BaseTest {
     ///      still available), and a refused re-entry leaves it true. This is the property a retrying deployer
     ///      reads it for — false means "send it", true means "do not".
     function test_Initialized_TracksTheShotRatherThanTheLastAttempt() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
         address attacker = makeAddr("attacker");
 
         vm.prank(attacker);
@@ -309,14 +309,14 @@ contract InitializationTest is BaseTest {
     // ---------- argument validation ----------
 
     function test_Initialize_RevertsOnZeroAdmin() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         vm.expectRevert(bytes("admin=0"));
         fresh.initialize(address(0), minter);
     }
 
     function test_Initialize_RevertsOnZeroMinter() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         vm.expectRevert(bytes("minter=0"));
         fresh.initialize(admin, address(0));
@@ -325,7 +325,7 @@ contract InitializationTest is BaseTest {
     /// @dev A rejected initialize must not consume the one shot — otherwise a fat-fingered zero address
     ///      would permanently strand a freshly deployed token.
     function test_Initialize_RejectedForAZeroAddress_LeavesTheInitializerAvailable() public {
-        StrandsCustodyToken fresh = _deployUninitialized();
+        StrandsDACAP fresh = _deployUninitialized();
 
         vm.expectRevert(bytes("minter=0"));
         fresh.initialize(admin, address(0));

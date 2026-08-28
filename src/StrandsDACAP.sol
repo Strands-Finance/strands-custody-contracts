@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -7,7 +7,7 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
 import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 
-/// @title  Strands Custody Token
+/// @title  Strands Digital Asset Custodial Account Proxy
 /// @notice ERC20 token where a balance is a claim against an off-chain ledger, so changing how many tokens
 ///         exist is a privileged act. ONE operating role owns both directions: `mint` and `guardMint` create
 ///         supply, `adminBurn`, `guardBurn`, `burn` and `burnFrom` destroy it, and all six are MINTER_ROLE.
@@ -39,7 +39,7 @@ import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 ///         It reads `to` and nothing else. Not `from`, not `msg.sender`. On `transferFrom` that means the
 ///         SPENDER'S standing and the OWNER'S standing are both irrelevant; the ERC20 allowance is still the
 ///         whole story of who may act, and the allowlist is the whole story of where value may land.
-contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable, ITransferAllowlist {
+contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferAllowlist {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     /// @notice Token decimals, fixed at deploy time to match the custodied
@@ -71,8 +71,8 @@ contract StrandsCustodyToken is ERC20Burnable, AccessControl, Initializable, ITr
 
     /// @param decimals_ Native decimals of the custodied asset; returned by `decimals()`.
     /// @param name_     ERC20 name. Per-deployment rather than baked in, so one token is distinguishable from the
-    ///                  next on an explorer: the backend composes asset + custodian, e.g. "Strands Custody USDC
-    ///                  (BitGo)". It identifies the ASSET and CUSTODIAN only — never the holder.
+    ///                  next on an explorer: the backend composes custodian + asset, e.g.
+    ///                  "Strands.DACAP.BitGo.USDC". It identifies the CUSTODIAN and ASSET only — never the holder.
     /// @param symbol_   ERC20 symbol, likewise per-deployment, e.g. "scUSDC".
     /// @dev   The DEPLOYER receives DEFAULT_ADMIN_ROLE, and is therefore the only address that can call
     ///        {initialize}. That is what closes the front-running window a bare `initializer`-only guard

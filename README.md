@@ -4,7 +4,7 @@ Custodial ERC20 token for the Strands platform.
 
 ## Overview
 
-`StrandsCustodyToken` is an OpenZeppelin `ERC20Burnable` token gated by
+`StrandsDACAP` is an OpenZeppelin `ERC20Burnable` token gated by
 `AccessControl`. A balance here is a **claim against an off-chain ledger**, so
 destroying supply is privileged. A holder cannot redeem themselves, and cannot
 delegate that power to anyone else via an ERC20 allowance.
@@ -108,7 +108,7 @@ rather than re-calling.
 
 | Field | Value |
 | --- | --- |
-| Name | Set at deploy time via `name_`, e.g. `Strands Custody USDC (BitGo)` |
+| Name | Set at deploy time via `name_`, e.g. `Strands.DACAP.BitGo.USDC` |
 | Symbol | Set at deploy time via `symbol_`, e.g. `scUSDC` |
 | Decimals | Set at deploy time via `decimals_` (e.g. USDC = 6, BTC = 8, ETH = 18) |
 | Initial supply | `0` (mint via `MINTER_ROLE`) |
@@ -211,7 +211,7 @@ image: minter-driven, and the holder cannot initiate it.
 # 1. Deploy + initialize — the script does both in one broadcast, because a token left
 #    uninitialized is inert and only the deployer key can finish it.
 export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
-export TOKEN_NAME="Strands Custody USDC (BitGo)" TOKEN_SYMBOL="scUSDC"
+export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="scUSDC"
 export MINTER_ADDRESS=0xMinter                                 # defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 
@@ -311,7 +311,7 @@ forge test -vvv
 export ADMIN_ADDRESS=0x...
 export DEPLOYER_PRIVATE_KEY=0x...
 export DECIMALS=6                                  # optional, defaults to 18
-export TOKEN_NAME="Strands Custody USDC (BitGo)"   # optional, defaults to "Strands Custody Token"
+export TOKEN_NAME="Strands.DACAP.BitGo.USDC"       # optional, defaults to "Strands Custody Token"
 export TOKEN_SYMBOL="scUSDC"                       # optional, defaults to "SCT"
 export MINTER_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol \
@@ -337,19 +337,19 @@ Pre-extracted artifacts in [`abi/`](./abi):
 
 | File | Format | Use with |
 | --- | --- | --- |
-| `abi/StrandsCustodyToken.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
-| `abi/StrandsCustodyToken.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
-| `abi/StrandsCustodyToken.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
+| `abi/StrandsDACAP.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
+| `abi/StrandsDACAP.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
+| `abi/StrandsDACAP.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 
 ### Strands ContractInterfaceGenerator
 
-Copy `abi/StrandsCustodyToken.json` into the directory the generator scans
-(e.g. `Sources/Strands/StrandsCustodyToken/StrandsCustodyToken.json`) and run
+Copy `abi/StrandsDACAP.json` into the directory the generator scans
+(e.g. `Sources/Strands/StrandsDACAP/StrandsDACAP.json`) and run
 the CIG normally. The artifact carries `bytecode` inline, so the copy is the
 whole sync — the generator bakes that value into
-`StrandsCustodyTokenDeploymentBase.BYTECODE`, and splicing the ABI and the
+`StrandsDACAPDeploymentBase.BYTECODE`, and splicing the ABI and the
 creation bytecode from separate files is how the two drift apart. If/when the
-contract is deployed, add a sibling `StrandsCustodyToken-deployments.json` of
+contract is deployed, add a sibling `StrandsDACAP-deployments.json` of
 shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 
 ### Plain Nethereum.Generator.Console
@@ -357,28 +357,28 @@ shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 ```bash
 dotnet tool install -g Nethereum.Generator.Console
 Nethereum.Generator.Console generate from-abi \
-  -abi abi/StrandsCustodyToken.abi \
-  -bin abi/StrandsCustodyToken.bin \
+  -abi abi/StrandsDACAP.abi \
+  -bin abi/StrandsDACAP.bin \
   -o   ./StrandsCustody.Contracts \
   -ns  StrandsCustody.Contracts \
-  -cn  StrandsCustodyToken
+  -cn  StrandsDACAP
 ```
 
 ### Regenerating after a contract change
 
 ```bash
 forge build
-forge inspect StrandsCustodyToken abi --json > abi/StrandsCustodyToken.abi
-forge inspect StrandsCustodyToken bytecode | sed 's/^0x//' > abi/StrandsCustodyToken.bin
+forge inspect StrandsDACAP abi --json > abi/StrandsDACAP.abi
+forge inspect StrandsDACAP bytecode | sed 's/^0x//' > abi/StrandsDACAP.bin
 python3 - <<'PY'
 import json
-abi = json.load(open("abi/StrandsCustodyToken.abi"))
-bytecode = open("abi/StrandsCustodyToken.bin").read().strip()
-with open("abi/StrandsCustodyToken.json", "w") as f:
+abi = json.load(open("abi/StrandsDACAP.abi"))
+bytecode = open("abi/StrandsDACAP.bin").read().strip()
+with open("abi/StrandsDACAP.json", "w") as f:
     json.dump({
         "_format": "hh-sol-artifact-1",
-        "contractName": "StrandsCustodyToken",
-        "sourceName":   "src/StrandsCustodyToken.sol",
+        "contractName": "StrandsDACAP",
+        "sourceName":   "src/StrandsDACAP.sol",
         "abi": abi,
         "bytecode": "0x" + bytecode,
     }, f, indent=2)
@@ -386,10 +386,11 @@ with open("abi/StrandsCustodyToken.json", "w") as f:
 PY
 ```
 
-Then copy `abi/StrandsCustodyToken.json` over the consumer's generator source and
+Then copy `abi/StrandsDACAP.json` over the consumer's generator source and
 re-run the generator — updating one without the other leaves the generated
 `BYTECODE` constant deploying an older contract.
 
 ## License
 
-MIT
+`src/` — the deployed contracts — is Business Source License 1.1. The tests,
+the deploy script and everything else in the repo remain MIT.
