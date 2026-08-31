@@ -31,7 +31,7 @@ jobs:
           forge inspect StrandsDACAP abi --json > /tmp/fresh.abi
           forge inspect StrandsDACAP bytecode | sed 's/^0x//' > /tmp/fresh.bin
           python3 - <<'PY'
-          import json, sys
+          import json, os, sys
 
           # Compare parsed, not byte-for-byte: the CI toolchain floats on `stable`, and a forge
           # release that reindents or reorders its JSON must not read as contract drift.
@@ -61,9 +61,31 @@ jobs:
           if artifact["bytecode"].removeprefix("0x") != fresh_bin:
               drift.append("abi/StrandsDACAP.json carries a stale `bytecode`")
 
+          # The standard JSON input is the ONLY artifact nothing else would catch. forge build and
+          # forge test never read it, the bytecode check above cannot see it, and a block explorer
+          # answers every submission with "verification started" and reports nothing at all when the
+          # sources compile but do not match — so drift here is invisible until someone opens the
+          # contract page and finds raw bytecode. Compare the source text it carries against src/.
+          standard_input = json.load(open("abi/StrandsDACAP.standard-input.json"))
+          submitted = standard_input["input"]["sources"]
+          if artifact["sourceName"] not in submitted:
+              drift.append(f"abi/StrandsDACAP.standard-input.json has no entry for "
+                           f"{artifact['sourceName']} — it predates the contract's current name")
+          # Every FIRST-PARTY source, not just the entrypoint: an edit to src/interfaces/ lands in the
+          # bytecode and in this payload, and checking only the main file would miss it.
+          for name, entry in sorted(submitted.items()):
+              if not name.startswith("src/"):
+                  continue          # lib/ is a pinned submodule; git already guarantees it
+              if not os.path.exists(name):
+                  drift.append(f"abi/StrandsDACAP.standard-input.json references {name}, "
+                               "which no longer exists in src/")
+              elif entry["content"] != open(name).read():
+                  drift.append(f"abi/StrandsDACAP.standard-input.json carries a stale {name}")
+
           if drift:
               print("\n".join(drift))
               sys.exit("\nRe-run the 'Regenerating after a contract change' block in README.md, "
-                       "then copy abi/StrandsDACAP.json to the consumer and re-run its generator.")
+                       "then copy abi/StrandsDACAP.json AND abi/StrandsDACAP.standard-input.json "
+                       "to the consumer and re-run its generator.")
           print("abi/ is in sync with src/")
           PY

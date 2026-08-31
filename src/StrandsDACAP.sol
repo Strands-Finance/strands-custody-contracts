@@ -73,7 +73,9 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     /// @param name_     ERC20 name. Per-deployment rather than baked in, so one token is distinguishable from the
     ///                  next on an explorer: the backend composes custodian + asset, e.g.
     ///                  "Strands.DACAP.BitGo.USDC". It identifies the CUSTODIAN and ASSET only — never the holder.
-    /// @param symbol_   ERC20 symbol, likewise per-deployment, e.g. "scUSDC".
+    /// @param symbol_   ERC20 symbol, likewise per-deployment, and the SAME string as `name_`: these labels
+    ///                  identify a custodial claim rather than a tradeable ticker, so there is no short form
+    ///                  worth having that a reader could not resolve back to the full name.
     /// @dev   The DEPLOYER receives DEFAULT_ADMIN_ROLE, and is therefore the only address that can call
     ///        {initialize}. That is what closes the front-running window a bare `initializer`-only guard
     ///        would leave open on a CREATE-deployed contract: between the deploy landing and the operator's

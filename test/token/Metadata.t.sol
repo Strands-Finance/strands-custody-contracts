@@ -26,13 +26,13 @@ contract MetadataTest is BaseTest {
     ///      hardcoded in the constructor. Asserting a single token's name against a constant cannot tell a
     ///      constructor argument apart from a literal that happens to match.
     function test_NameAndSymbol_AreSetByConstructor() public {
-        StrandsDACAP usdc = new StrandsDACAP(6, "Strands Custody USDC (BitGo)", "scUSDC");
-        StrandsDACAP weth = new StrandsDACAP(18, "Strands Custody WETH (Anchorage)", "scWETH");
+        StrandsDACAP usdc = new StrandsDACAP(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
+        StrandsDACAP weth = new StrandsDACAP(18, "Strands.DACAP.Anchorage.WETH", "Strands.DACAP.Anchorage.WETH");
 
-        assertEq(usdc.name(), "Strands Custody USDC (BitGo)");
-        assertEq(usdc.symbol(), "scUSDC");
-        assertEq(weth.name(), "Strands Custody WETH (Anchorage)");
-        assertEq(weth.symbol(), "scWETH");
+        assertEq(usdc.name(), "Strands.DACAP.BitGo.USDC");
+        assertEq(usdc.symbol(), "Strands.DACAP.BitGo.USDC");
+        assertEq(weth.name(), "Strands.DACAP.Anchorage.WETH");
+        assertEq(weth.symbol(), "Strands.DACAP.Anchorage.WETH");
     }
 
     function test_Constructor_RevertsOnEmptyName() public {

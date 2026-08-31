@@ -10,12 +10,13 @@ contract Deploy is Script {
         uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
         // Native decimals of the custodied asset (e.g. USDC=6, BTC=8, ETH=18). Defaults to 18.
         uint8 decimals_ = uint8(vm.envOr("DECIMALS", uint256(18)));
-        // Composed as "Strands.DACAP.<custodian>.<ASSET>" / "sc<ASSET>" — custodian and asset only, no holder.
+        // Both composed as "Strands.DACAP.<custodian>.<ASSET>" — custodian and asset only, no holder. The symbol
+        // is the same string as the name rather than a short form: these labels identify a custodial claim, not a
+        // tradeable ticker, and one unambiguous string beats a terse one nothing resolves back to.
         // Defaulted rather than required: the constructor rejects empty metadata, so a missing variable would
-        // otherwise waste a deploy, and the fallback is the exact pair every token carried before this contract
-        // took name/symbol as arguments. SET THEM — the default deploys a token indistinguishable from the rest.
-        string memory name_ = vm.envOr("TOKEN_NAME", string("Strands Custody Token"));
-        string memory symbol_ = vm.envOr("TOKEN_SYMBOL", string("SCT"));
+        // otherwise waste a deploy. SET THEM — the default deploys a token indistinguishable from the rest.
+        string memory name_ = vm.envOr("TOKEN_NAME", string("Strands.DACAP"));
+        string memory symbol_ = vm.envOr("TOKEN_SYMBOL", string("Strands.DACAP"));
         // The one operating role. Defaulted to the admin so a single-key deploy (the backend's shape: one
         // mint-authority EOA is admin and minter) needs no extra variables, while a production deploy points
         // it at its own multisig and keeps the admin key cold.

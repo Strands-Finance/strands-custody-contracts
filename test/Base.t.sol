@@ -30,11 +30,11 @@ abstract contract BaseTest is Test {
     uint256 internal constant INITIAL_MINT = 1_000 ether;
 
     /// @dev The metadata `setUp` deploys with, in the exact shape the backend
-    ///      composes: "Strands Custody <asset> (<custodian>)" / "sc<ASSET>".
-    ///      ETH because the fixture is 18-decimal; `Metadata.t.sol` is where the
-    ///      strings themselves are the subject.
-    string internal constant NAME = "Strands Custody ETH (BitGo)";
-    string internal constant SYMBOL = "scETH";
+    ///      composes: "Strands.DACAP.<custodian>.<ASSET>", used for BOTH name
+    ///      and symbol. ETH because the fixture is 18-decimal; `Metadata.t.sol`
+    ///      is where the strings themselves are the subject.
+    string internal constant NAME = "Strands.DACAP.BitGo.ETH";
+    string internal constant SYMBOL = "Strands.DACAP.BitGo.ETH";
 
     /// @dev Role ids, read from the token in `setUp` so the CONTRACT stays the
     ///      source of truth. Cached because a `token.X_ROLE()` call placed after
@@ -71,7 +71,7 @@ abstract contract BaseTest is Test {
     ///      the suites that use this are about arithmetic, and `Metadata.t.sol` owns naming. The role ids are
     ///      keccak constants, so the cached MINTER_ROLE applies to any instance.
     function _deployWithDecimals(uint8 decimals_) internal returns (StrandsDACAP t) {
-        t = new StrandsDACAP(decimals_, "Strands Custody Fixture", "scFIX");
+        t = new StrandsDACAP(decimals_, "Strands.DACAP.Fixture", "Strands.DACAP.Fixture");
         t.initialize(admin, minter);
     }
 

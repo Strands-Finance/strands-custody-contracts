@@ -109,14 +109,20 @@ rather than re-calling.
 | Field | Value |
 | --- | --- |
 | Name | Set at deploy time via `name_`, e.g. `Strands.DACAP.BitGo.USDC` |
-| Symbol | Set at deploy time via `symbol_`, e.g. `scUSDC` |
+| Symbol | Set at deploy time via `symbol_`, the SAME string as the name, e.g. `Strands.DACAP.BitGo.USDC` |
 | Decimals | Set at deploy time via `decimals_` (e.g. USDC = 6, BTC = 8, ETH = 18) |
 | Initial supply | `0` (mint via `MINTER_ROLE`) |
 
-One token is deployed per (holder wallet, custodian, asset), so the name and
-symbol identify **which asset at which custodian** — enough to tell a USDC token
-from a WETH one on an explorer without a lookup, and deliberately not enough to
-identify the holder. Every holder's USDC-at-BitGo token carries the same label.
+Both follow `Strands.DACAP.<custodian>.<ASSET>`. One token is deployed per
+(holder wallet, custodian, asset), so the label identifies **which asset at which
+custodian** — enough to tell a USDC token from a WETH one on an explorer without a
+lookup, and deliberately not enough to identify the holder. Every holder's
+USDC-at-BitGo token carries the same label.
+
+The symbol is not abbreviated to a short ticker. These tokens are claims against
+an off-chain ledger rather than instruments anyone trades, so there is no venue
+where a terse symbol earns its ambiguity — and a wallet rendering
+`Strands.DACAP.BitGo.USDC` beside a balance says exactly what the balance is.
 
 All three fields are constructor-only and **immutable**: there is no setter, so a
 token deployed with the wrong name can only be redeployed and re-minted into.
@@ -211,9 +217,10 @@ image: minter-driven, and the holder cannot initiate it.
 # 1. Deploy + initialize — the script does both in one broadcast, because a token left
 #    uninitialized is inert and only the deployer key can finish it.
 export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
-export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="scUSDC"
+export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"
 export MINTER_ADDRESS=0xMinter                                 # defaults to $ADMIN_ADDRESS
-forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
+# No --verify. Source publication is deliberately not performed — see "Source verification" below.
+forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
 
 # 2. ...or, deploying by hand, seat the roles yourself. Run this from the DEPLOYER key —
 #    it is the only address holding DEFAULT_ADMIN_ROLE until this call hands it over.
@@ -311,25 +318,43 @@ forge test -vvv
 export ADMIN_ADDRESS=0x...
 export DEPLOYER_PRIVATE_KEY=0x...
 export DECIMALS=6                                  # optional, defaults to 18
-export TOKEN_NAME="Strands.DACAP.BitGo.USDC"       # optional, defaults to "Strands Custody Token"
-export TOKEN_SYMBOL="scUSDC"                       # optional, defaults to "SCT"
+export TOKEN_NAME="Strands.DACAP.BitGo.USDC"       # optional, defaults to "Strands.DACAP"
+export TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"     # optional, defaults to "Strands.DACAP"
 export MINTER_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
-  --broadcast \
-  --verify
+  --broadcast
 ```
 
-**Set `TOKEN_NAME` and `TOKEN_SYMBOL`.** They default to `Strands Custody Token` /
-`SCT` — the pair every token carried before this contract took them as arguments —
-so a deploy never fails or produces a nameless token for want of an environment
-variable. But the label is permanent, and taking the default gives you a token
-indistinguishable from every other one on an explorer, which is the whole thing
-these arguments exist to fix.
+**Set `TOKEN_NAME` and `TOKEN_SYMBOL`, and set them to the same string.** Both
+follow `Strands.DACAP.<custodian>.<ASSET>`; the symbol is not abbreviated because
+these labels identify a custodial claim rather than a tradeable ticker. They both
+default to `Strands.DACAP` so a deploy never fails or produces a nameless token for
+want of an environment variable. But the label is permanent, and taking the default
+gives you a token indistinguishable from every other one on an explorer, which is
+the whole thing these arguments exist to fix.
 
 The script deploys and initializes in one broadcast, so the token is live when
 it returns. Deploying by hand instead means the deployer key must follow up with
 `initialize(admin, minter)` — until it does, the token is inert.
+
+## Source verification
+
+**Deployments are not verified on a block explorer, and `--verify` is deliberately
+absent from every command above.** Verifying publishes this repository's Solidity
+source to a public explorer; that publication carries legal implications that have
+not been settled, so it is off by default rather than a step an operator has to
+remember to skip.
+
+The capability still exists on the consumer side and is switched, not deleted: the
+backend gates it behind `CONTRACT_VERIFICATION_ENABLED`, which defaults to false.
+That is why `abi/StrandsDACAP.standard-input.json` is still committed and still
+checked for drift by CI — the moment the flag is turned on, a stale artifact
+verifies nothing, silently. Keep it correct even while it is unused.
+
+If verification is ever authorised, turn on the backend flag rather than adding
+`--verify` here; the backend submits the same standard JSON input, and having one
+path means one thing to audit.
 
 ## .NET / Nethereum code generation
 
@@ -340,17 +365,26 @@ Pre-extracted artifacts in [`abi/`](./abi):
 | `abi/StrandsDACAP.json` | Hardhat-style artifact (object with `_format`, `contractName`, `sourceName`, inline `abi` and `bytecode`) | Strands `ContractInterfaceGenerator` and any tool that expects a Hardhat/Truffle artifact |
 | `abi/StrandsDACAP.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
 | `abi/StrandsDACAP.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
+| `abi/StrandsDACAP.standard-input.json` | `{solcLongVersion, input}` wrapping the solc standard JSON input that produced the bytecode | Block-explorer source verification, via the consumer's generated `SOURCES` constant |
 
 ### Strands ContractInterfaceGenerator
 
 Copy `abi/StrandsDACAP.json` into the directory the generator scans
 (e.g. `Sources/Strands/StrandsDACAP/StrandsDACAP.json`) and run
-the CIG normally. The artifact carries `bytecode` inline, so the copy is the
-whole sync — the generator bakes that value into
+the CIG normally. The artifact carries `bytecode` inline, so that copy is the
+whole ABI/bytecode sync — the generator bakes that value into
 `StrandsDACAPDeploymentBase.BYTECODE`, and splicing the ABI and the
-creation bytecode from separate files is how the two drift apart. If/when the
-contract is deployed, add a sibling `StrandsDACAP-deployments.json` of
-shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
+creation bytecode from separate files is how the two drift apart.
+
+Copy `abi/StrandsDACAP.standard-input.json` alongside it, under the same stem
+(`Sources/Strands/StrandsDACAP/StrandsDACAP.standard-input.json`). The generator
+picks it up by that name and emits `StrandsDACAPDeployment.SOURCES`; without it
+that constant is simply not generated, and verification has nothing to submit.
+The two files must come from the same `forge build` — see "Source verification"
+for why a mismatch is invisible rather than loud.
+
+If/when the contract is deployed, add a sibling `StrandsDACAP-deployments.json`
+of shape `{"<chainId>": "0x<address>"}` to have the deployment class generated too.
 
 ### Plain Nethereum.Generator.Console
 
@@ -384,11 +418,29 @@ with open("abi/StrandsDACAP.json", "w") as f:
     }, f, indent=2)
     f.write("\n")
 PY
+
+# The verification payload. Nothing above produces it and nothing else reads it, so it is the
+# one artifact that rots silently — see "Source verification". The address is a placeholder;
+# --show-standard-json-input prints the payload locally and contacts no explorer.
+forge verify-contract --show-standard-json-input \
+  0x0000000000000000000000000000000000000001 src/StrandsDACAP.sol:StrandsDACAP > /tmp/bare.json
+python3 - <<'PY2'
+import json
+bare = json.load(open("/tmp/bare.json"))
+version = json.load(open("out/StrandsDACAP.sol/StrandsDACAP.json"))["metadata"]["compiler"]["version"]
+# Wrapped as {solcLongVersion, input} so the compiler version travels with the sources and is
+# never hand-typed. The consumer unwraps it: an explorer wants the bare {language, sources,
+# settings}, and handing one the wrapper is accepted and then never verifies.
+with open("abi/StrandsDACAP.standard-input.json", "w") as f:
+    json.dump({"solcLongVersion": version, "input": bare}, f, indent=2)
+    f.write("\n")
+PY2
 ```
 
-Then copy `abi/StrandsDACAP.json` over the consumer's generator source and
-re-run the generator — updating one without the other leaves the generated
-`BYTECODE` constant deploying an older contract.
+Then copy **both** `abi/StrandsDACAP.json` and `abi/StrandsDACAP.standard-input.json`
+over the consumer's generator source and re-run the generator. Updating one without
+the other leaves the generated `BYTECODE` constant deploying an older contract, or
+the generated `SOURCES` constant describing one.
 
 ## License
 
