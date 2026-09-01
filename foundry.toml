@@ -13,7 +13,7 @@ fuzz = { runs = 256 }
 # ABI from unprivileged senders, so nearly every call is SUPPOSED to be refused. With reverts fatal the run would
 # stop at the first role rejection and prove nothing.
 invariant = { runs = 256, depth = 64, fail_on_revert = false }
-gas_reports = ["StrandsCustodyToken"]
+gas_reports = ["StrandsDACAP"]
 
 [lint]
 # OZ ERC20 reverts on failure instead of returning false, so unchecked

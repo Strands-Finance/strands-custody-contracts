@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import { stdError } from "forge-std/StdError.sol";
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { GuardMintBase } from "./GuardMintBase.t.sol";
-import { StrandsCustodyToken } from "../../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../../src/StrandsDACAP.sol";
 
 /// @notice The edges of `guardMint`'s inputs: the zero recipient, and the top of the uint256 range.
 /// @dev    Both are about what the guard must NOT absorb. `guardMint` calls `_mint` directly rather than through
@@ -22,7 +22,7 @@ contract GuardMintBoundariesTest is GuardMintBase {
     /// @dev At the ceiling the guard still gates — a zero-amount mint with the right estimate goes through — and
     ///      still does not mask arithmetic: the overflow surfaces as ERC20's own panic.
     function test_GuardMint_AtMaxSupply_GatesAndLetsOverflowPanic() public {
-        StrandsCustodyToken t = _deployWithDecimals(18);
+        StrandsDACAP t = _deployWithDecimals(18);
 
         vm.prank(minter);
         t.guardMint(bob, type(uint256).max, 0);

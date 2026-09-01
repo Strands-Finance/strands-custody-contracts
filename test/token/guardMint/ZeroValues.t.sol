@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import { GuardMintBase } from "./GuardMintBase.t.sol";
-import { StrandsCustodyToken } from "../../../src/StrandsCustodyToken.sol";
+import { StrandsDACAP } from "../../../src/StrandsDACAP.sol";
 
 /// @notice Zero is a value, not a sentinel.
 /// @dev    `guardMint` takes two numbers that can be zero, and the obvious tests only ever pass zero where it
@@ -65,7 +65,7 @@ contract GuardMintZeroValuesTest is GuardMintBase {
     /// @dev Both zeros at once, on a fresh token, and the mint path is not wedged afterwards: a no-op first call
     ///      must leave the supply at zero so the NEXT call's estimate is still zero.
     function test_GuardMint_ZeroAmountAndZeroEstimate_OnAFreshToken() public {
-        StrandsCustodyToken t = _deployWithDecimals(18);
+        StrandsDACAP t = _deployWithDecimals(18);
 
         vm.prank(minter);
         t.guardMint(bob, 0, 0);
