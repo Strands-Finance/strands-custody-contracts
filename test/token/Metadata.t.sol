@@ -17,17 +17,17 @@ contract MetadataTest is BaseTest {
     }
 
     function test_Decimals_AreSetByConstructor() public {
-        assertEq(new StrandsDACAP(6, NAME, SYMBOL).decimals(), 6, "usdc");
-        assertEq(new StrandsDACAP(8, NAME, SYMBOL).decimals(), 8, "btc");
-        assertEq(new StrandsDACAP(18, NAME, SYMBOL).decimals(), 18, "eth");
+        assertEq(_deploy(6, NAME, SYMBOL).decimals(), 6, "usdc");
+        assertEq(_deploy(8, NAME, SYMBOL).decimals(), 8, "btc");
+        assertEq(_deploy(18, NAME, SYMBOL).decimals(), 18, "eth");
     }
 
     /// @dev Two tokens, different metadata — the one shape that fails if the strings ever regress to being
     ///      hardcoded in the constructor. Asserting a single token's name against a constant cannot tell a
     ///      constructor argument apart from a literal that happens to match.
     function test_NameAndSymbol_AreSetByConstructor() public {
-        StrandsDACAP usdc = new StrandsDACAP(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
-        StrandsDACAP weth = new StrandsDACAP(18, "Strands.DACAP.Anchorage.WETH", "Strands.DACAP.Anchorage.WETH");
+        StrandsDACAP usdc = _deploy(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
+        StrandsDACAP weth = _deploy(18, "Strands.DACAP.Anchorage.WETH", "Strands.DACAP.Anchorage.WETH");
 
         assertEq(usdc.name(), "Strands.DACAP.BitGo.USDC");
         assertEq(usdc.symbol(), "Strands.DACAP.BitGo.USDC");
@@ -37,11 +37,11 @@ contract MetadataTest is BaseTest {
 
     function test_Constructor_RevertsOnEmptyName() public {
         vm.expectRevert(bytes("name=0"));
-        new StrandsDACAP(18, "", SYMBOL);
+        _deploy(18, "", SYMBOL);
     }
 
     function test_Constructor_RevertsOnEmptySymbol() public {
         vm.expectRevert(bytes("symbol=0"));
-        new StrandsDACAP(18, NAME, "");
+        _deploy(18, NAME, "");
     }
 }

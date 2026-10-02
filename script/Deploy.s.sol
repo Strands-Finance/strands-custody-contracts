@@ -2,10 +2,15 @@
 pragma solidity ^0.8.24;
 
 import { Script, console2 } from "forge-std/Script.sol";
+import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import { StrandsDACAP } from "../src/StrandsDACAP.sol";
 
+/// @notice Deploys ONE token: a `BeaconProxy` in front of the implementation the chain's beacon names.
+///         The beacon itself is deployed once per chain by `DeployBeacon.s.sol`.
 contract Deploy is Script {
     function run() external returns (StrandsDACAP token) {
+        // The chain's UpgradeableBeacon. Required: there is no sensible default for which code a token runs.
+        address beacon = vm.envAddress("BEACON_ADDRESS");
         address admin = vm.envAddress("ADMIN_ADDRESS");
         uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
         // Native decimals of the custodied asset (e.g. USDC=6, BTC=8, ETH=18). Defaults to 18.
@@ -13,7 +18,7 @@ contract Deploy is Script {
         // Both composed as "Strands.DACAP.<custodian>.<ASSET>" — custodian and asset only, no holder. The symbol
         // is the same string as the name rather than a short form: these labels identify a custodial claim, not a
         // tradeable ticker, and one unambiguous string beats a terse one nothing resolves back to.
-        // Defaulted rather than required: the constructor rejects empty metadata, so a missing variable would
+        // Defaulted rather than required: `initializeToken` rejects empty metadata, so a missing variable would
         // otherwise waste a deploy. SET THEM — the default deploys a token indistinguishable from the rest.
         string memory name_ = vm.envOr("TOKEN_NAME", string("Strands.DACAP"));
         string memory symbol_ = vm.envOr("TOKEN_SYMBOL", string("Strands.DACAP"));
@@ -23,14 +28,19 @@ contract Deploy is Script {
         address minter = vm.envOr("MINTER_ADDRESS", admin);
 
         vm.startBroadcast(pk);
-        token = new StrandsDACAP(decimals_, name_, symbol_);
+        // `initializeToken` travels as the proxy constructor's data, so the metadata is fixed and the deployer
+        // seated as admin in the deploy transaction itself. A proxy created with empty data could be claimed
+        // by whoever called `initializeToken` first.
+        bytes memory init = abi.encodeCall(StrandsDACAP.initializeToken, (decimals_, name_, symbol_));
+        token = StrandsDACAP(address(new BeaconProxy(beacon, init)));
         // Same broadcast as the deploy: a token left uninitialized is inert, and the deployer key is the only
         // address that can finish it. Splitting these across runs turns a dropped second transaction into an
         // operator problem for no benefit.
         token.initialize(admin, minter);
         vm.stopBroadcast();
 
-        console2.log("StrandsDACAP deployed at:", address(token));
+        console2.log("StrandsDACAP (BeaconProxy) deployed at:", address(token));
+        console2.log("Beacon:", beacon);
         console2.log("Admin:", admin);
         console2.log("Minter:", minter);
         console2.log("Decimals:", decimals_);

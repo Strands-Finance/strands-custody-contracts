@@ -36,7 +36,15 @@ contract SupplyInvariantTest is BaseTest {
         // The whole token, not a handler: routing through a handler would limit
         // the fuzzer to the functions the handler chose to expose, which is
         // exactly the staleness this suite exists to avoid.
-        targetContract(address(token));
+        //
+        // Named by interface because the token is a proxy: the address resolves
+        // to `BeaconProxy`, which has no ABI of its own, and `targetContract`
+        // would find nothing to fuzz. Naming the artifact still enumerates the
+        // implementation's ENTIRE ABI — nothing is listed by hand — and every
+        // call goes through the proxy, as a real one would.
+        string[] memory artifacts = new string[](1);
+        artifacts[0] = "StrandsDACAP";
+        targetInterface(FuzzInterface({ addr: address(token), artifacts: artifacts }));
 
         // Ordinary users only. Listing senders explicitly (rather than letting
         // the fuzzer invent addresses) is what puts a FUNDED holder in the
