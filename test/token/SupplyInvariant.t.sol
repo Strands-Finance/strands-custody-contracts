@@ -46,6 +46,15 @@ contract SupplyInvariantTest is BaseTest {
         artifacts[0] = "StrandsDACAP";
         targetInterface(FuzzInterface({ addr: address(token), artifacts: artifacts }));
 
+        // `targetInterface` ADDS a target; it does not narrow the set. With no
+        // `targetContract` call, every contract `setUp` deployed is fuzzed too —
+        // the bare implementation and the beacon — and they took more than half
+        // of every run's calls away from the token. Neither is what these
+        // invariants are about: no assertion reads the implementation's own
+        // storage, and who may upgrade the beacon is `Proxy.t.sol`'s.
+        excludeContract(address(implementation));
+        excludeContract(address(beacon));
+
         // Ordinary users only. Listing senders explicitly (rather than letting
         // the fuzzer invent addresses) is what puts a FUNDED holder in the
         // population — an address with a zero balance cannot distinguish "the
@@ -65,6 +74,12 @@ contract SupplyInvariantTest is BaseTest {
     ///      indirectly — by a stranger acquiring MINTER_ROLE, or by the role's
     ///      admin being repointed at something they can obtain. Neither may
     ///      happen through any call an ordinary user can make.
+    ///
+    ///      A holder acquiring DEFAULT_ADMIN_ROLE is checked separately, because
+    ///      it is one grant away from MINTER_ROLE and the fuzzer may never land
+    ///      that second call. It matters since `initializeToken` became an
+    ///      external function that grants DEFAULT_ADMIN_ROLE to its caller; the
+    ///      constructor it replaced was not reachable after deploy at all.
     function invariant_TheRoleGraphIsUnreachableWithoutTheAdmin() public view {
         assertTrue(token.hasRole(MINTER_ROLE, minter), "the seated minter was unseated by a stranger");
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin), "the seated admin was unseated by a stranger");
@@ -73,6 +88,10 @@ contract SupplyInvariantTest is BaseTest {
         assertFalse(token.hasRole(MINTER_ROLE, alice), "a holder acquired the operating role");
         assertFalse(token.hasRole(MINTER_ROLE, bob), "a holder acquired the operating role");
         assertFalse(token.hasRole(MINTER_ROLE, carol), "a holder acquired the operating role");
+
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, alice), "a holder acquired the admin role");
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, bob), "a holder acquired the admin role");
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, carol), "a holder acquired the admin role");
     }
 
     /// @dev The admin's OTHER standing power, held to the same standard. The

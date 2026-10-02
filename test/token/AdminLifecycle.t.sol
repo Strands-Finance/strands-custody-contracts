@@ -23,6 +23,11 @@ import { BaseTest } from "../Base.t.sol";
 ///            holder freezes the role graph permanently — and the allowlist
 ///            with it.
 ///
+///         "Permanently", "any party" and "ever" below mean through the token's
+///         own functions. The beacon's owner sits outside all of them: it can
+///         point every token at new code, and new code could re-seat an admin.
+///         See the README's Security section; `Proxy.t.sol` owns the upgrade.
+///
 /// @dev    This suite relies on the plain `BaseTest` fixture, where `admin` is
 ///         the ONLY holder of DEFAULT_ADMIN_ROLE. Adding a second holder to the
 ///         fixture would silently invalidate every "last admin" assertion below.
@@ -255,7 +260,8 @@ contract AdminLifecycleTest is BaseTest {
 
     /// @dev DEFAULT_ADMIN_ROLE is its own role admin, so re-granting it requires
     ///      already holding it. Once the last holder is gone there is no
-    ///      bootstrap path from ANY party.
+    ///      bootstrap path from ANY party through the token — only a beacon
+    ///      upgrade, which is outside it (see the contract notes above).
     function test_RenouncedLastAdmin_IsUnrecoverableByAnyParty() public {
         vm.prank(admin);
         token.renounceRole(DEFAULT_ADMIN_ROLE, admin);
@@ -318,7 +324,8 @@ contract AdminLifecycleTest is BaseTest {
     ///      rule exists to prevent, and it now takes only TWO losses rather than
     ///      three: one operating role means the minter is the sole redemption
     ///      path, so admin + minter gone is terminal. Balances still move along
-    ///      already-open routes but can never be redeemed by anyone, ever.
+    ///      already-open routes but can never be redeemed by anyone, ever,
+    ///      short of a beacon upgrade (see the contract notes above).
     ///
     ///      The narrower loss is worth stating too: losing ONLY the minter is
     ///      recoverable, because the admin can appoint a replacement — which is
