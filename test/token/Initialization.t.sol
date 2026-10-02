@@ -4,11 +4,13 @@ pragma solidity ^0.8.24;
 import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Deployment is two transactions — the proxy deploy (which runs `initializeToken`) then `initialize` — and this suite owns the gap
-///         between them. Three properties carry it:
+/// @notice Deployment is two transactions — the proxy deploy (which runs `initializeToken`) then `initialize` —
+///         and this suite owns the gap between them. Three properties carry it:
 ///
 ///         1. The deploy seats the DEPLOYER as admin and grants no operating role, so the window is
 ///            INERT (nothing mints, nothing burns) and RECOVERABLE (the deployer can still initialize).
+///            `initializeToken` cannot run again afterwards, so the deploy is the only time admin is handed
+///            to whoever is calling.
 ///         2. `initialize` is admin-only, which is what makes it un-front-runnable. `initializer` alone would
 ///            let a stranger seat themselves as the token's minter between the two transactions — and with
 ///            one operating role, that is the whole of its mint AND burn authority.
@@ -230,8 +232,8 @@ contract InitializationTest is BaseTest {
     }
 
     /// @dev The fixture's own token, re-initialized by its live admin. `onlyRole` passes here — `admin` really
-    ///      does hold DEFAULT_ADMIN_ROLE — so this is the case where `initializer` is the ONLY thing standing
-    ///      between an admin and a silent minter swap under a call named "initialize".
+    ///      does hold DEFAULT_ADMIN_ROLE — so this is the case where `reinitializer(2)` is the ONLY thing
+    ///      standing between an admin and a silent minter swap under a call named "initialize".
     function test_Initialize_CannotBeReplayedByTheLiveAdmin() public {
         vm.prank(admin);
         _expectAlreadyInitialized();
@@ -240,8 +242,8 @@ contract InitializationTest is BaseTest {
         assertFalse(token.hasRole(MINTER_ROLE, carol));
     }
 
-    /// @dev And it does not become available again after an admin rotation — `initializer` is a property of
-    ///      the CONTRACT, not of the caller. Kills the reading where each new admin gets a fresh shot.
+    /// @dev And it does not become available again after an admin rotation — `reinitializer(2)` is a property
+    ///      of the CONTRACT, not of the caller. Kills the reading where each new admin gets a fresh shot.
     function test_Initialize_CannotBeReplayedAfterAdminHandoff() public {
         address newAdmin = makeAddr("newAdmin");
 
@@ -262,6 +264,53 @@ contract InitializationTest is BaseTest {
         vm.prank(alice);
         _expectMissingRole(alice, DEFAULT_ADMIN_ROLE);
         token.initialize(alice, alice);
+    }
+
+    /// @dev `initializeToken` does what the constructor did, but unlike a constructor it is an external function,
+    ///      and it grants DEFAULT_ADMIN_ROLE to its caller. "Only the deployer is seated by the deploy" and "the
+    ///      metadata has no setter" therefore rest on its `initializer` guard rather than on the language. Tried
+    ///      on both sides of the gap (a fresh token and the initialized fixture) by the deployer, the seated admin
+    ///      and a stranger: a replay that got through would hand its caller the role graph, or rename the token.
+    function test_InitializeToken_CannotBeReplayedOnADeployedToken() public {
+        StrandsDACAP fresh = _deployUninitialized();
+        address attacker = makeAddr("attacker");
+
+        address[3] memory callers = [address(this), admin, attacker];
+        for (uint256 i = 0; i < callers.length; i++) {
+            vm.prank(callers[i]);
+            _expectAlreadyInitialized();
+            fresh.initializeToken(6, "Strands.DACAP.Replayed", "Strands.DACAP.Replayed");
+
+            vm.prank(callers[i]);
+            _expectAlreadyInitialized();
+            token.initializeToken(6, "Strands.DACAP.Replayed", "Strands.DACAP.Replayed");
+        }
+
+        assertEq(fresh.name(), NAME, "a refused replay renames nothing");
+        assertEq(fresh.decimals(), 18, "nor changes decimals");
+        assertEq(token.name(), NAME);
+        assertEq(token.decimals(), 18);
+        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, attacker), "and seats no admin");
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, attacker));
+
+        // The deploy's real second transaction is unaffected by the refused attempts.
+        assertFalse(fresh.initialized());
+        fresh.initialize(admin, minter);
+        assertTrue(fresh.hasRole(MINTER_ROLE, minter));
+    }
+
+    /// @dev No address is special. Inside the gap, a stranger seated as admin could go on to name the minter, so
+    ///      every caller is refused there. The deployer is excluded only because it already holds the role, which
+    ///      would make the closing assertion meaningless; the test above covers its refusal.
+    function testFuzz_InitializeToken_IsRefusedForAnyCallerInTheGap(address caller) public {
+        vm.assume(caller != address(this));
+        StrandsDACAP fresh = _deployUninitialized();
+
+        vm.prank(caller);
+        _expectAlreadyInitialized();
+        fresh.initializeToken(6, "Strands.DACAP.Replayed", "Strands.DACAP.Replayed");
+
+        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, caller), "no caller is seated by a replay");
     }
 
     // ---------- reporting the gap ----------
