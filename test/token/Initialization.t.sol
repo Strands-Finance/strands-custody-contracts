@@ -4,10 +4,10 @@ pragma solidity ^0.8.24;
 import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Deployment is two transactions — `constructor` then `initialize` — and this suite owns the gap
+/// @notice Deployment is two transactions — the proxy deploy (which runs `initializeToken`) then `initialize` — and this suite owns the gap
 ///         between them. Three properties carry it:
 ///
-///         1. The constructor seats the DEPLOYER as admin and grants no operating role, so the window is
+///         1. The deploy seats the DEPLOYER as admin and grants no operating role, so the window is
 ///            INERT (nothing mints, nothing burns) and RECOVERABLE (the deployer can still initialize).
 ///         2. `initialize` is admin-only, which is what makes it un-front-runnable. `initializer` alone would
 ///            let a stranger seat themselves as the token's minter between the two transactions — and with
@@ -18,12 +18,12 @@ import { BaseTest } from "../Base.t.sol";
 /// @dev    The fixture's `token` is already initialized, so most tests here deploy their own via
 ///         `_deployUninitialized()`. This test contract is the deployer of those, and therefore their admin.
 contract InitializationTest is BaseTest {
-    // ---------- what the constructor leaves behind ----------
+    // ---------- what the deploy leaves behind ----------
 
-    /// @dev The admin goes to `msg.sender` — NOT to a constructor argument, which is the change that makes
+    /// @dev The admin goes to `msg.sender` — NOT to a deploy argument, which is the change that makes
     ///      `initialize` safe to leave external. Asserting the deployer holds it and the eventual admin does
     ///      not is what distinguishes this from the old four-argument constructor.
-    function test_Constructor_GrantsAdminToTheDeployerAndNothingElse() public {
+    function test_Deploy_GrantsAdminToTheDeployerAndNothingElse() public {
         StrandsDACAP fresh = _deployUninitialized();
 
         assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, address(this)), "the deployer is the bootstrap admin");
@@ -32,9 +32,9 @@ contract InitializationTest is BaseTest {
         assertEq(fresh.totalSupply(), 0, "a fresh token has no supply");
     }
 
-    /// @dev The metadata is still the constructor's business, and still immutable. Pinned here because the
-    ///      constructor lost a parameter and a mis-ordered argument list would compile.
-    function test_Constructor_StillSetsMetadata() public {
+    /// @dev The metadata is the deploy's business, and has no setter afterwards. Pinned here because a
+    ///      mis-ordered `initializeToken` argument list would compile.
+    function test_Deploy_SetsMetadata() public {
         StrandsDACAP fresh = _deploy(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
 
         assertEq(fresh.decimals(), 6);
@@ -270,7 +270,7 @@ contract InitializationTest is BaseTest {
     ///      in one test, because a getter stuck at either constant would pass a one-sided assertion.
     function test_Initialized_ReportsBothSidesOfTheGap() public {
         StrandsDACAP fresh = _deployUninitialized();
-        assertFalse(fresh.initialized(), "the constructor alone does not initialize");
+        assertFalse(fresh.initialized(), "the deploy alone does not initialize");
 
         fresh.initialize(admin, minter);
         assertTrue(fresh.initialized(), "and initialize is what flips it");
