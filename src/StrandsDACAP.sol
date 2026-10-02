@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
-import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import { ERC20Burnable } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
-import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {
+    ERC20BurnableUpgradeable
+} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
+import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 
 /// @title  Strands Digital Asset Custodial Account Proxy
@@ -20,10 +20,18 @@ import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 ///         minted to, and redeemed from, an address that is on no list.
 ///
 /// @dev
-///         {Initializable} is used here as a call-this-exactly-once guard, in the same role
-///         `SimpleInitializable` plays across the Strands contracts — NOT as an upgradeability story. This
-///         token is NOT proxy-safe: `_decimals` is immutable and ERC20's name/symbol are written by the
-///         constructor, so behind a proxy all three would read empty.
+///         This contract is an IMPLEMENTATION. It is never used directly: every token is a `BeaconProxy`
+///         that delegates here, so each token's balances, roles, metadata and allowlist live in that proxy's
+///         own storage and one deployment of this code backs all of them. The constructor locks the
+///         implementation itself, and {initializeToken} does per token what a constructor would have done.
+///
+///         The logic behind every proxy is whatever the beacon names, so the BEACON'S OWNER can replace it for
+///         all tokens at once. That power is outside this contract and outside its roles — DEFAULT_ADMIN_ROLE
+///         cannot upgrade anything. Nothing here upgrades, and no upgrade function exists on the token.
+///
+///         State this contract adds lives in one ERC-7201 namespaced struct ({DACAPStorage}), as OpenZeppelin's
+///         upgradeable bases keep theirs, so a later version can change its inheritance without moving a slot.
+///         A LATER VERSION MAY ONLY APPEND TO THAT STRUCT.
 ///
 ///         Two things about WHERE the transfer guard lives, both deliberate:
 ///
@@ -39,23 +47,25 @@ import { ITransferAllowlist } from "./interfaces/ITransferAllowlist.sol";
 ///         It reads `to` and nothing else. Not `from`, not `msg.sender`. On `transferFrom` that means the
 ///         SPENDER'S standing and the OWNER'S standing are both irrelevant; the ERC20 allowance is still the
 ///         whole story of who may act, and the allowlist is the whole story of where value may land.
-contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferAllowlist {
+contract StrandsDACAP is ERC20BurnableUpgradeable, AccessControlUpgradeable, ITransferAllowlist {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
-    /// @notice Token decimals, fixed at deploy time to match the custodied
-    ///         asset's native base unit (e.g. USDC = 6, BTC = 8, ETH = 18).
-    uint8 private immutable _decimals;
+    /// @custom:storage-location erc7201:strands.storage.StrandsDACAP
+    struct DACAPStorage {
+        /// @dev Token decimals, fixed at deploy time to match the custodied asset's native base unit
+        ///      (e.g. USDC = 6, BTC = 8, ETH = 18).
+        uint8 decimals;
+        /// @dev Whether a destination may receive tokens by transfer. Flat and destination-keyed on purpose. An
+        ///      earlier version keyed this `[holder][destination]`, which made the list a graph of
+        ///      O(holders x destinations) directed edges that an operator had to open one pair at a time and
+        ///      could never enumerate. One key states the property that was actually being enforced: some
+        ///      addresses are acceptable places for value to land, and the rest are not.
+        mapping(address destination => bool) allowedDestination;
+    }
 
-    /// @notice Whether `destination` may receive tokens by transfer.
-    /// @dev    Flat and destination-keyed on purpose. An earlier version keyed this `[holder][destination]`,
-    ///         which made the list a graph of O(holders x destinations) directed edges that an operator had
-    ///         to open one pair at a time and could never enumerate. One key states the property that was
-    ///         actually being enforced: some addresses are acceptable places for value to land, and the rest
-    ///         are not.
-    ///
-    ///         `public` rather than a hand-written getter: the compiler-generated getter satisfies
-    ///         {ITransferAllowlist-allowedDestination} exactly, signature and mutability included.
-    mapping(address destination => bool) public override allowedDestination;
+    // keccak256(abi.encode(uint256(keccak256("strands.storage.StrandsDACAP")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant DACAP_STORAGE_LOCATION =
+        0x94b7310252f3826cce10f0dba840c935d992f0d817174335cd814aafabd92d00;
 
     /// @notice Emitted on every burn, whichever entrypoint destroyed the supply.
     /// @dev    A reconciler tracking the off-chain ledger can subscribe to this alone: `adminBurn`,
@@ -69,6 +79,15 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     /// @param estimatedSupply The caller's claimed supply.
     error SupplyMismatch(uint256 actualSupply, uint256 estimatedSupply);
 
+    /// @dev Locks the implementation: nothing can initialize it, so the only state this code ever touches is a
+    ///      proxy's.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Fix the token's metadata and seat the deployer as admin. What the constructor did before this
+    ///         token sat behind a proxy, and called the same way: as part of the deploy itself.
     /// @param decimals_ Native decimals of the custodied asset; returned by `decimals()`.
     /// @param name_     ERC20 name. Per-deployment rather than baked in, so one token is distinguishable from the
     ///                  next on an explorer: the backend composes custodian + asset, e.g.
@@ -76,17 +95,26 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     /// @param symbol_   ERC20 symbol, likewise per-deployment, and the SAME string as `name_`: these labels
     ///                  identify a custodial claim rather than a tradeable ticker, so there is no short form
     ///                  worth having that a reader could not resolve back to the full name.
-    /// @dev   The DEPLOYER receives DEFAULT_ADMIN_ROLE, and is therefore the only address that can call
-    ///        {initialize}. That is what closes the front-running window a bare `initializer`-only guard
-    ///        would leave open on a CREATE-deployed contract: between the deploy landing and the operator's
-    ///        second transaction, anyone could otherwise seat themselves as the token's minter — which is the
-    ///        whole of its mint AND burn authority.
-    constructor(uint8 decimals_, string memory name_, string memory symbol_) ERC20(name_, symbol_) {
+    /// @dev   MUST be passed as the proxy constructor's `data`, so it runs inside the proxy's own deploy
+    ///        transaction. There `msg.sender` is whoever deployed the proxy, exactly as it was in a constructor:
+    ///        the DEPLOYER receives DEFAULT_ADMIN_ROLE, and is therefore the only address that can call
+    ///        {initialize}. That is what closes the front-running window between the deploy landing and the
+    ///        operator's second transaction, in which anyone could otherwise seat themselves as the token's
+    ///        minter — which is the whole of its mint AND burn authority.
+    ///
+    ///        A PROXY DEPLOYED WITH EMPTY `data` HAS NO SUCH DEFENCE: the first caller of this function becomes
+    ///        its admin.
+    function initializeToken(uint8 decimals_, string calldata name_, string calldata symbol_) external initializer {
         // Empty metadata is UNRECOVERABLE: there is no setter, so the token would be permanently anonymous and the
         // only remedy is redeploy-and-re-mint. Reverting the deploy is the cheap end of that trade.
         require(bytes(name_).length != 0, "name=0");
         require(bytes(symbol_).length != 0, "symbol=0");
-        _decimals = decimals_;
+
+        __ERC20_init(name_, symbol_);
+        __ERC20Burnable_init();
+        __AccessControl_init();
+
+        _getDACAPStorage().decimals = decimals_;
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
@@ -94,9 +122,12 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     /// @param admin  Receives DEFAULT_ADMIN_ROLE: the role graph, and nothing operational.
     /// @param minter Receives MINTER_ROLE: `mint`, `guardMint`, `adminBurn`, `guardBurn`, `burn`, `burnFrom`.
     /// @dev   Both guards are load-bearing and neither is sufficient alone: `onlyRole(DEFAULT_ADMIN_ROLE)` is
-    ///        what makes this un-front-runnable, and `initializer` is what makes it un-repeatable. Without the
-    ///        role check a stranger seats themselves first; without `initializer` an admin could silently
-    ///        re-seat a different minter under a call named "initialize".
+    ///        what makes this un-front-runnable, and `reinitializer(2)` is what makes it un-repeatable. Without
+    ///        the role check a stranger seats themselves first; without the one-shot guard an admin could
+    ///        silently re-seat a different minter under a call named "initialize".
+    ///
+    ///        Version 2 because {initializeToken} took version 1 in the deploy. An initializer added by a later
+    ///        implementation therefore starts at 3.
     ///
     ///        The deployer's own admin role is revoked unless it IS the admin, so the role graph afterwards is
     ///        exactly what the arguments say — no residual deployer privilege for an auditor to chase. When
@@ -106,7 +137,7 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     ///        NOT IDEMPOTENT. A second call reverts with `InvalidInitialization()`, unlike the `grantRole`
     ///        sends this replaces. A caller with a retry path must read {initialized} first rather than
     ///        re-calling and interpreting the revert.
-    function initialize(address admin, address minter) external onlyRole(DEFAULT_ADMIN_ROLE) initializer {
+    function initialize(address admin, address minter) external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
         require(admin != address(0), "admin=0");
         require(minter != address(0), "minter=0");
 
@@ -124,18 +155,18 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     ///         has to ASK rather than re-send and interpret a revert. OpenZeppelin keeps
     ///         `_getInitializedVersion()` internal, so this is the only public answer.
     ///
-    ///         A bool rather than the version number: this token is NOT proxy-safe (see the contract notes) and
-    ///         will never be reinitialized, so "which version" is a question it can never have a second answer to.
+    ///         A bool rather than the version number, and it asks about {initialize} specifically: the deploy
+    ///         itself leaves the version at 1 ({initializeToken}), so "initialized" here means 2 or later.
     ///
     ///         True also means the roles are seated as {initialize}'s arguments named them, and — because only
     ///         the deployer can reach {initialize} at all — that they were seated by whoever deployed it.
     function initialized() external view returns (bool) {
-        return _getInitializedVersion() != 0;
+        return _getInitializedVersion() >= 2;
     }
 
     /// @notice Decimals of this token, set at deploy time to match the custodied asset.
     function decimals() public view virtual override returns (uint8) {
-        return _decimals;
+        return _getDACAPStorage().decimals;
     }
 
     /// @notice Mint `amount` tokens to `to`. Restricted to MINTER_ROLE.
@@ -202,6 +233,11 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     }
 
     /// @inheritdoc ITransferAllowlist
+    function allowedDestination(address destination) external view override returns (bool) {
+        return _getDACAPStorage().allowedDestination[destination];
+    }
+
+    /// @inheritdoc ITransferAllowlist
     /// @dev The write is unconditional and so is the event — see the note on
     ///      {ITransferAllowlist-DestinationAllowedSet}. Restricted to
     ///      DEFAULT_ADMIN_ROLE, which makes this the admin's SECOND standing
@@ -210,7 +246,7 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     ///      cannot move it anywhere, least of all to the admin. No burn path
     ///      consults this list, so a stranded balance is still redeemable.
     function setDestinationAllowed(address destination, bool allowed) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        allowedDestination[destination] = allowed;
+        _getDACAPStorage().allowedDestination[destination] = allowed;
         emit DestinationAllowedSet(destination, allowed);
     }
 
@@ -250,6 +286,12 @@ contract StrandsDACAP is ERC20Burnable, AccessControl, Initializable, ITransferA
     ///      unreachable from a subclass is what stops it becoming a check a
     ///      future entrypoint is assumed to have made.
     function _requireDestinationAllowed(address destination) private view {
-        if (!allowedDestination[destination]) revert TransferDestinationNotAllowed(destination);
+        if (!_getDACAPStorage().allowedDestination[destination]) revert TransferDestinationNotAllowed(destination);
+    }
+
+    function _getDACAPStorage() private pure returns (DACAPStorage storage $) {
+        assembly {
+            $.slot := DACAP_STORAGE_LOCATION
+        }
     }
 }

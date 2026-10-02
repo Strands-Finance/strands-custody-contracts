@@ -30,6 +30,8 @@ jobs:
         run: |
           forge inspect StrandsDACAP abi --json > /tmp/fresh.abi
           forge inspect StrandsDACAP bytecode | sed 's/^0x//' > /tmp/fresh.bin
+          forge inspect BeaconProxy abi --json > /tmp/fresh-proxy.abi
+          forge inspect BeaconProxy bytecode | sed 's/^0x//' > /tmp/fresh-proxy.bin
           python3 - <<'PY'
           import json, os, sys
 
@@ -61,6 +63,15 @@ jobs:
           if artifact["bytecode"].removeprefix("0x") != fresh_bin:
               drift.append("abi/StrandsDACAP.json carries a stale `bytecode`")
 
+          # The proxy is what the consumer actually DEPLOYS — the token above is only the code behind it — so
+          # its creation bytecode is checked the same way. It changes when the pinned OpenZeppelin submodule
+          # or the compiler settings in foundry.toml do.
+          proxy = json.load(open("abi/BeaconProxy.json"))
+          if norm(proxy["abi"]) != norm(json.load(open("/tmp/fresh-proxy.abi"))):
+              drift.append("abi/BeaconProxy.json carries a stale `abi`")
+          if proxy["bytecode"].removeprefix("0x") != open("/tmp/fresh-proxy.bin").read().strip():
+              drift.append("abi/BeaconProxy.json carries a stale `bytecode`")
+
           # The standard JSON input is the ONLY artifact nothing else would catch. forge build and
           # forge test never read it, the bytecode check above cannot see it, and a block explorer
           # answers every submission with "verification started" and reports nothing at all when the
@@ -85,7 +96,8 @@ jobs:
           if drift:
               print("\n".join(drift))
               sys.exit("\nRe-run the 'Regenerating after a contract change' block in README.md, "
-                       "then copy abi/StrandsDACAP.json AND abi/StrandsDACAP.standard-input.json "
+                       "then copy abi/StrandsDACAP.json, abi/StrandsDACAP.standard-input.json AND "
+                       "abi/BeaconProxy.json "
                        "to the consumer and re-run its generator.")
           print("abi/ is in sync with src/")
           PY

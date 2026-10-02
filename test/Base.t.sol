@@ -3,14 +3,19 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
-import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { StrandsDACAP } from "../src/StrandsDACAP.sol";
 import { ITransferAllowlist } from "../src/interfaces/ITransferAllowlist.sol";
 
 /// @title  Shared test fixture
-/// @notice Deploys the token, seats DEFAULT_ADMIN_ROLE / MINTER_ROLE through
-///         `initialize` and funds `alice` with `INITIAL_MINT`. Every suite under
-///         `test/` extends this so the starting state is identical across files.
+/// @notice Deploys the implementation and its beacon once, then the token as a
+///         `BeaconProxy` — the only shape a token is ever deployed in. Seats
+///         DEFAULT_ADMIN_ROLE / MINTER_ROLE through `initialize` and funds
+///         `alice` with `INITIAL_MINT`. Every suite under `test/` extends this so
+///         the starting state is identical across files, and so every suite runs
+///         THROUGH the proxy without saying so.
 /// @dev    The transfer allowlist starts EMPTY and `setUp` opens nothing. That
 ///         is what makes the mint and burn suites double as the proof that
 ///         issuance and redemption are exempt: they run start to finish against
@@ -18,6 +23,14 @@ import { ITransferAllowlist } from "../src/interfaces/ITransferAllowlist.sol";
 ///         say so in their own `setUp` override.
 abstract contract BaseTest is Test {
     StrandsDACAP internal token;
+
+    /// @dev The code every proxy delegates to, and the beacon that names it. One of each, however many
+    ///      tokens a suite deploys.
+    StrandsDACAP internal implementation;
+    UpgradeableBeacon internal beacon;
+
+    /// @dev Owns the beacon and nothing else: no role on any token. The one address that can upgrade.
+    address internal beaconOwner = makeAddr("beaconOwner");
 
     address internal admin = makeAddr("admin");
     address internal minter = makeAddr("minter");
@@ -49,10 +62,13 @@ abstract contract BaseTest is Test {
     event Initialized(uint64 version);
 
     function setUp() public virtual {
-        // This test contract is the deployer, so the constructor seats IT as DEFAULT_ADMIN_ROLE — which is
+        implementation = new StrandsDACAP();
+        beacon = new UpgradeableBeacon(address(implementation), beaconOwner);
+
+        // This test contract is the deployer, so `initializeToken` seats IT as DEFAULT_ADMIN_ROLE — which is
         // what lets it call `initialize` and hand the role on to `admin` in the same step. No `vm.prank`
         // wrapper: pranking the deploy would seat a different admin than the one that initializes.
-        token = new StrandsDACAP(18, NAME, SYMBOL);
+        token = _deploy(18, NAME, SYMBOL);
 
         DEFAULT_ADMIN_ROLE = token.DEFAULT_ADMIN_ROLE();
         MINTER_ROLE = token.MINTER_ROLE();
@@ -67,18 +83,26 @@ abstract contract BaseTest is Test {
 
     // ---------- fixtures ----------
 
+    /// @dev A token exactly as production deploys one: a `BeaconProxy` whose constructor runs
+    ///      `initializeToken` in the same transaction. Uninitialized in the sense that matters — no minter,
+    ///      and this test contract still holding DEFAULT_ADMIN_ROLE.
+    function _deploy(uint8 decimals_, string memory name_, string memory symbol_) internal returns (StrandsDACAP t) {
+        bytes memory init = abi.encodeCall(StrandsDACAP.initializeToken, (decimals_, name_, symbol_));
+        t = StrandsDACAP(address(new BeaconProxy(address(beacon), init)));
+    }
+
     /// @dev A token at an arbitrary magnitude, wired like the fixture's. Metadata is deliberately generic —
     ///      the suites that use this are about arithmetic, and `Metadata.t.sol` owns naming. The role ids are
     ///      keccak constants, so the cached MINTER_ROLE applies to any instance.
     function _deployWithDecimals(uint8 decimals_) internal returns (StrandsDACAP t) {
-        t = new StrandsDACAP(decimals_, "Strands.DACAP.Fixture", "Strands.DACAP.Fixture");
+        t = _deploy(decimals_, "Strands.DACAP.Fixture", "Strands.DACAP.Fixture");
         t.initialize(admin, minter);
     }
 
     /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no minter, and this test contract still holding
     ///      DEFAULT_ADMIN_ROLE. The state a deploy leaves behind before its second transaction.
     function _deployUninitialized() internal returns (StrandsDACAP t) {
-        t = new StrandsDACAP(18, NAME, SYMBOL);
+        t = _deploy(18, NAME, SYMBOL);
     }
 
     // ---------- allowlist arrangement (admin-pranked) ----------

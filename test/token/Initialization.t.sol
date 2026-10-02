@@ -35,7 +35,7 @@ contract InitializationTest is BaseTest {
     /// @dev The metadata is still the constructor's business, and still immutable. Pinned here because the
     ///      constructor lost a parameter and a mis-ordered argument list would compile.
     function test_Constructor_StillSetsMetadata() public {
-        StrandsDACAP fresh = new StrandsDACAP(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
+        StrandsDACAP fresh = _deploy(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
 
         assertEq(fresh.decimals(), 6);
         assertEq(fresh.name(), "Strands.DACAP.BitGo.USDC");
@@ -116,7 +116,7 @@ contract InitializationTest is BaseTest {
         StrandsDACAP fresh = _deployUninitialized();
 
         vm.expectEmit(false, false, false, true, address(fresh));
-        emit Initialized(1);
+        emit Initialized(2);
 
         fresh.initialize(admin, minter);
     }

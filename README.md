@@ -5,7 +5,8 @@ Custodial ERC20 token for the Strands platform.
 ## Overview
 
 `StrandsDACAP` is an OpenZeppelin `ERC20Burnable` token gated by
-`AccessControl`. A balance here is a **claim against an off-chain ledger**, so
+`AccessControl`, deployed behind a **beacon proxy** (see
+[Proxy and upgradeability](#proxy-and-upgradeability)). A balance here is a **claim against an off-chain ledger**, so
 destroying supply is privileged. A holder cannot redeem themselves, and cannot
 delegate that power to anyone else via an ERC20 allowance.
 
@@ -81,12 +82,47 @@ destination strands a balance where it is and cannot move it anywhere, least of
 all to the admin. There is no `adminTransfer` escape hatch, and adding one would
 undo that property.
 
+## Proxy and upgradeability
+
+A token is never the `StrandsDACAP` contract itself. It is an OpenZeppelin
+`BeaconProxy`, and that proxy's address is the token's address: the one that
+holds balances, roles, metadata and the allowlist, and the one an integration
+registers.
+
+```
+holder / integration ──► BeaconProxy (one per token: all the state)
+                              │  "which code?"          delegatecall
+                              ├──► UpgradeableBeacon ──► StrandsDACAP implementation
+                              │    (one per chain)       (one per chain: code only)
+```
+
+One implementation and one beacon serve every token on a chain. Pointing the
+beacon at a new implementation (`beacon.upgradeTo(newImplementation)`) changes
+the logic of **every token at once**, at the same addresses, with every balance
+intact — which is the point: a change to the token no longer means a burn and a
+re-mint.
+
+- **Upgrade authority is the beacon's owner, and only that.** It is not a role
+  on the token: `DEFAULT_ADMIN_ROLE` cannot upgrade, and the token has no
+  upgrade function. See [Security](#security) for what that owner can do.
+- **The implementation is locked.** Its constructor disables initializers, so it
+  can never be made to look like a token.
+- **A new implementation may only append to `DACAPStorage`.** The token's own
+  state lives in one ERC-7201 namespaced struct; reordering or removing a field
+  silently reinterprets every token's storage, and `forge` will not catch it.
+- Nothing in this repo performs an upgrade. `test/token/Proxy.t.sol` proves one
+  keeps state.
+
 ## Deployment is two transactions
 
-The constructor takes only the token's own metadata and grants
-`DEFAULT_ADMIN_ROLE` to **the deployer**. Both roles are seated by a separate
-`initialize(admin, minter)`, which is `onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs
-exactly once.
+The proxy's deploy runs `initializeToken(decimals, name, symbol)` in the same
+transaction, which fixes the token's metadata and grants `DEFAULT_ADMIN_ROLE`
+to **the deployer** — what the constructor did before the token sat behind a
+proxy. Both roles are seated by a separate `initialize(admin, minter)`, which is
+`onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs exactly once.
+
+**Always pass `initializeToken` as the proxy constructor's `data`.** A proxy
+created with empty `data` belongs to whoever calls `initializeToken` first.
 
 Both guards are load-bearing. The role check is what makes `initialize`
 un-front-runnable — a CREATE deploy is visible the moment it lands, and with
@@ -124,9 +160,10 @@ an off-chain ledger rather than instruments anyone trades, so there is no venue
 where a terse symbol earns its ambiguity — and a wallet rendering
 `Strands.DACAP.BitGo.USDC` beside a balance says exactly what the balance is.
 
-All three fields are constructor-only and **immutable**: there is no setter, so a
-token deployed with the wrong name can only be redeployed and re-minted into.
-The constructor rejects an empty `name_` or `symbol_` for that reason.
+All three fields are set by `initializeToken` during the deploy and have **no
+setter**, so a token deployed with the wrong name can only be redeployed and
+re-minted into. `initializeToken` rejects an empty `name_` or `symbol_` for that
+reason.
 
 ## Roles
 
@@ -138,7 +175,7 @@ Two roles, following OpenZeppelin's own division: `DEFAULT_ADMIN_ROLE` is
 | `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and call `initialize` once. **No power over balances.** |
 | `MINTER_ROLE` | Everything that moves supply: `mint`, `guardMint`, `guardBurn`, `adminBurn`, `burn`, `burnFrom` |
 
-The constructor grants `DEFAULT_ADMIN_ROLE` to the deployer; `initialize` then
+The deploy grants `DEFAULT_ADMIN_ROLE` to the deployer; `initialize` then
 seats both roles at whichever addresses (ideally multisigs / timelocks) should
 hold them, and hands admin on.
 
@@ -152,7 +189,8 @@ keeps every escalation visible as a `RoleGranted`.
 ## API
 
 ```solidity
-constructor(uint8 decimals_, string memory name_, string memory symbol_);  // admin -> msg.sender
+// Passed as the BeaconProxy constructor's data, so it runs in the deploy.  admin -> msg.sender
+function initializeToken(uint8 decimals_, string calldata name_, string calldata symbol_) external;
 
 function initialize(address admin, address minter) external; // DEFAULT_ADMIN_ROLE, once
 
@@ -214,8 +252,11 @@ on the reconciler's `Transfer` log for no reason. Redemption is the mirror
 image: minter-driven, and the holder cannot initiate it.
 
 ```bash
+# 0. Once per chain: the implementation and its beacon. See "Deploy".
+#
 # 1. Deploy + initialize — the script does both in one broadcast, because a token left
 #    uninitialized is inert and only the deployer key can finish it.
+export BEACON_ADDRESS=0xBeacon
 export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"
 export MINTER_ADDRESS=0xMinter                                 # defaults to $ADMIN_ADDRESS
@@ -273,7 +314,16 @@ Between deploy and `initialize`, `DEFAULT_ADMIN_ROLE` sits on the **deployer
 key**. Keep that window short and the key controlled: it is the one address that
 can decide who the minter will be.
 
+**The beacon's owner sits above all of this.** It can point every token at new
+code, and new code can do anything: mint without `MINTER_ROLE`, ignore the
+allowlist, burn without emitting `Burned`. Every guarantee in this document
+holds only for as long as the beacon names an implementation that keeps it.
+Treat that key as the most powerful one in the system.
+
 In production:
+
+- Hold the beacon's ownership in a timelock-controlled multisig, separate from
+  both roles. Monitor the beacon's `Upgraded` event.
 
 - Hold `MINTER_ROLE` in a multisig with operational signers only, and keep at
   least two holders of it. It is the only key that can redeem.
@@ -314,7 +364,23 @@ forge test -vvv
 
 ## Deploy
 
+**Once per chain** — the implementation and the beacon every token points at:
+
 ```bash
+export DEPLOYER_PRIVATE_KEY=0x...
+export BEACON_OWNER=0x...                          # required; the only address that can upgrade
+forge script script/DeployBeacon.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast
+```
+
+The `UpgradeableBeacon` address it prints is `BEACON_ADDRESS` below, and what the
+backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`.
+
+**Per token** — a `BeaconProxy` in front of it:
+
+```bash
+export BEACON_ADDRESS=0x...                        # from DeployBeacon above
 export ADMIN_ADDRESS=0x...
 export DEPLOYER_PRIVATE_KEY=0x...
 export DECIMALS=6                                  # optional, defaults to 18
@@ -366,6 +432,13 @@ Pre-extracted artifacts in [`abi/`](./abi):
 | `abi/StrandsDACAP.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
 | `abi/StrandsDACAP.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 | `abi/StrandsDACAP.standard-input.json` | `{solcLongVersion, input}` wrapping the solc standard JSON input that produced the bytecode | Block-explorer source verification, via the consumer's generated `SOURCES` constant |
+| `abi/BeaconProxy.json` | Hardhat-style artifact for OpenZeppelin's `BeaconProxy`, compiled with this repo's settings | Strands `ContractInterfaceGenerator` — **this is the bytecode a consumer deploys per token** |
+
+`StrandsDACAP.json` is the token's ABI, which is what a consumer calls through
+the proxy. Its `bytecode` is the *implementation's* — deployed once per chain by
+`DeployBeacon.s.sol`, never per token. A consumer deploys `BeaconProxy`, with the
+beacon address and ABI-encoded `initializeToken(...)` calldata as its two
+constructor arguments.
 
 ### Strands ContractInterfaceGenerator
 
@@ -375,6 +448,10 @@ the CIG normally. The artifact carries `bytecode` inline, so that copy is the
 whole ABI/bytecode sync — the generator bakes that value into
 `StrandsDACAPDeploymentBase.BYTECODE`, and splicing the ABI and the
 creation bytecode from separate files is how the two drift apart.
+
+Copy `abi/BeaconProxy.json` the same way (e.g.
+`Sources/Strands/BeaconProxy/BeaconProxy.json`): its generated deployment class is
+the one the consumer sends.
 
 Copy `abi/StrandsDACAP.standard-input.json` alongside it, under the same stem
 (`Sources/Strands/StrandsDACAP/StrandsDACAP.standard-input.json`). The generator
@@ -419,6 +496,23 @@ with open("abi/StrandsDACAP.json", "w") as f:
     f.write("\n")
 PY
 
+# The proxy a consumer deploys per token. Unchanged by an edit to src/ — it moves only with the
+# OpenZeppelin submodule or the compiler settings — but regenerated here so it cannot be forgotten.
+forge inspect BeaconProxy abi --json > /tmp/BeaconProxy.abi
+forge inspect BeaconProxy bytecode | sed 's/^0x//' > /tmp/BeaconProxy.bin
+python3 - <<'PY3'
+import json
+with open("abi/BeaconProxy.json", "w") as f:
+    json.dump({
+        "_format": "hh-sol-artifact-1",
+        "contractName": "BeaconProxy",
+        "sourceName":   "lib/openzeppelin-contracts/contracts/proxy/beacon/BeaconProxy.sol",
+        "abi": json.load(open("/tmp/BeaconProxy.abi")),
+        "bytecode": "0x" + open("/tmp/BeaconProxy.bin").read().strip(),
+    }, f, indent=2)
+    f.write("\n")
+PY3
+
 # The verification payload. Nothing above produces it and nothing else reads it, so it is the
 # one artifact that rots silently — see "Source verification". The address is a placeholder;
 # --show-standard-json-input prints the payload locally and contacts no explorer.
@@ -437,8 +531,8 @@ with open("abi/StrandsDACAP.standard-input.json", "w") as f:
 PY2
 ```
 
-Then copy **both** `abi/StrandsDACAP.json` and `abi/StrandsDACAP.standard-input.json`
-over the consumer's generator source and re-run the generator. Updating one without
+Then copy `abi/StrandsDACAP.json`, `abi/StrandsDACAP.standard-input.json` and
+`abi/BeaconProxy.json` over the consumer's generator source and re-run the generator. Updating one without
 the other leaves the generated `BYTECODE` constant deploying an older contract, or
 the generated `SOURCES` constant describing one.
 
