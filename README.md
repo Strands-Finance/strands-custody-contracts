@@ -112,7 +112,9 @@ re-mint.
   can never be made to look like a token.
 - **A new implementation may only append to `DACAPStorage`.** The token's own
   state lives in one ERC-7201 namespaced struct; reordering or removing a field
-  silently reinterprets every token's storage, and `forge` will not catch it.
+  silently reinterprets every token's storage, and neither the compiler nor the
+  beacon's `upgradeTo` checks it. `test/token/StorageLayout.t.sol` pins where
+  every field lives, and a new implementation must keep it passing.
 - Nothing in this repo performs an upgrade. `test/token/Proxy.t.sol` proves one
   keeps state.
 
