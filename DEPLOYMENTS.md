@@ -65,10 +65,33 @@ testing is at a state he trusts. Until then, "not deployed" is expected, not a g
 The beacon is to be owned by Derive. `DeployBeacon.s.sol` makes the deploying Strands key the owner; hand it over with
 `TransferBeaconOwnership.s.sol`.
 
+## Ethereum Sepolia (chain 11155111)
+
+Not deployed yet. Cameron deploys it by hand (decided on 2026-10-05), before Ethereum mainnet, and with the same
+deploying key as mainnet. Derive has no V3 testnet, so this beacon is for Strands' own testing on a public chain;
+nothing of Derive's is on Sepolia. The deploying key owns the beacon.
+
+With `ALCHEMY_KEY` and `DEPLOYER_PRIVATE_KEY` in the environment (see "Deploy" in the README):
+1. Dry-run: `forge script script/DeployBeacon.s.sol --sig "sepolia()"`.
+2. Deploy: the same with `--broadcast`. Add the rows here.
+
+Rehearsed on 2026-10-05, on a local anvil fork of Sepolia (`--sig "localFork()"`): 1,571,403 gas. A dry run of `--sig "sepolia()"` against Sepolia itself simulated cleanly.
+
 ## Ethereum mainnet (chain 1, Derive V3)
 
-Not deployed, on purpose: the same 2026-10-05 hold applies. The same choice of owner applies as on Derive Chain mainnet.
+Not deployed yet. Cameron deploys it by hand (decided on 2026-10-05), with the same deploying key as Sepolia.
+`DeployBeacon.s.sol` makes that key the beacon's owner; it is handed to Derive later with
+`TransferBeaconOwnership.s.sol`, once Derive names its L1 address.
 
-Before deploying here, run the fork suite in `test/fork/`. On a fork of Ethereum mainnet it runs `DeployBeacon.s.sol`,
-deploys a token, hands the token's admin role and the beacon to Derive, and checks that everything comes out correctly
-deployed, initialized and permissioned. See "Fork test" in the README.
+Derive V3 has no testnet of its own, so the deploy is also rehearsed on a local anvil fork of Ethereum mainnet. With
+`ALCHEMY_KEY` and `DEPLOYER_PRIVATE_KEY` in the environment, the steps are (from "Fork test" and "Deploy" in the
+README):
+1. Run the fork suite in `test/fork/`. On a fork of Ethereum mainnet it runs `DeployBeacon.s.sol`, deploys a token,
+   hands the token's admin role and the beacon to Derive, and checks that everything comes out correctly deployed,
+   initialized and permissioned.
+2. Rehearse on a local anvil fork of mainnet (`--chain-id 31337`): `DeployBeacon.s.sol --sig "localFork()"`.
+3. Dry-run: `forge script script/DeployBeacon.s.sol --sig "mainnet()"`.
+4. Deploy: the same with `--broadcast`. Add the rows here.
+
+Rehearsed on 2026-10-05, on a fork at block 26,129,310: the implementation took 1,322,062 gas and the beacon 249,341,
+1,571,403 in all.

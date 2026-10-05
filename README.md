@@ -440,17 +440,38 @@ the real addresses once Derive names them.
 
 **Once per chain** — the implementation and the beacon every token points at. The deploying key owns the beacon,
 and so is the one address that can upgrade every token, until it hands the beacon to Derive (see
-[Hand the beacon to Derive](#hand-the-beacon-to-derive)):
+[Hand the beacon to Derive](#hand-the-beacon-to-derive)).
+
+The command names the chain, and the scripts hold each chain's RPC and chain id (`script/Networks.sol`). The RPCs are
+the backend's Alchemy endpoints, so the only inputs are two environment variables, the same two on every chain. A
+deploy is one command:
 
 ```bash
-export DEPLOYER_PRIVATE_KEY=0x...                  # deploys both, and owns the beacon
-forge script script/DeployBeacon.s.sol \
-  --rpc-url $RPC_URL \
-  --broadcast
+export ALCHEMY_KEY=...                 # the backend's Alchemy key (see "Fork test"); never commit it
+export DEPLOYER_PRIVATE_KEY=0x...      # the same key on Sepolia and mainnet: deploys both, and owns the beacon
+
+forge script script/DeployBeacon.s.sol --sig "sepolia()" --broadcast
+```
+
+For Ethereum mainnet, `--sig "mainnet()"`. There is no `--rpc-url`: the script forks the named chain's RPC itself and
+broadcasts there. A command that names no chain fails (`run` is not in the ABI) and sends nothing, and the deploy
+refuses before signing if the RPC answers as any chain but the one named. Forge's own `--chain` flag gives no such
+guard: it broadcasts to whatever chain the RPC is on.
+
+Before the real deploy, rehearse it on a local fork, then dry-run against the chain:
+
+```bash
+# Rehearse. --chain-id 31337 keeps anything signed on the fork invalid on the real chain.
+anvil --fork-url https://eth-sepolia.g.alchemy.com/v2/$ALCHEMY_KEY --chain-id 31337 --port 8546 &
+forge script script/DeployBeacon.s.sol --sig "localFork()" --broadcast
+
+# Dry run against the real chain: no --broadcast, so nothing is sent.
+forge script script/DeployBeacon.s.sol --sig "sepolia()"
 ```
 
 The `UpgradeableBeacon` address it prints is `BEACON_ADDRESS` below, and what the
-backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`.
+backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`. Record it in
+[`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
 
 **Per token** — a `BeaconProxy` in front of it:
 

@@ -76,7 +76,7 @@ abstract contract EthereumMainnetForkTest is Test {
 
         // The once-per-chain deploy, through the script an operator will run on mainnet.
         (strandsBeaconOwner, strandsBeaconOwnerKey) = makeAddrAndKey("strandsBeaconOwner");
-        (implementation, beacon) = new DeployBeacon().deploy(strandsBeaconOwnerKey);
+        (implementation, beacon) = new DeployBeacon().deploy(strandsBeaconOwnerKey, ETHEREUM_MAINNET);
 
         DEFAULT_ADMIN_ROLE = implementation.DEFAULT_ADMIN_ROLE();
         MINTER_ROLE = implementation.MINTER_ROLE();

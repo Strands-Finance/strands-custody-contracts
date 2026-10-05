@@ -33,7 +33,7 @@ contract DeployBeaconScriptTest is BaseTest {
     /// @dev The deploying key owns the beacon, and so alone can upgrade it, until it hands it to Derive with
     ///      `TransferBeaconOwnership.s.sol`.
     function test_Deploy_TheBeaconNamesTheImplementation_AndTheDeployingKeyOwnsIt() public {
-        (StrandsDACAP impl, UpgradeableBeacon deployed) = script.deploy(deployerKey);
+        (StrandsDACAP impl, UpgradeableBeacon deployed) = script.deploy(deployerKey, block.chainid);
 
         assertEq(deployed.implementation(), address(impl), "the beacon names the implementation it was deployed with");
         assertEq(deployed.owner(), deployer, "the deploying key owns the beacon");
@@ -43,12 +43,24 @@ contract DeployBeaconScriptTest is BaseTest {
         deployed.upgradeTo(address(implementation));
     }
 
+    /// @dev The deploy names the chain it is meant for, and an RPC on any other chain is refused before anything is
+    ///      signed: here, a mainnet RPC where Sepolia was meant. Forge's `--chain` flag does not catch this.
+    function test_Deploy_RefusesAnRpcOnAnotherChain_BeforeSendingAnything() public {
+        vm.chainId(1);
+        uint64 nonceBefore = vm.getNonce(deployer);
+
+        vm.expectRevert(bytes("the RPC is chain 1, not the expected 11155111: nothing was sent"));
+        script.deploy(deployerKey, 11155111);
+
+        assertEq(vm.getNonce(deployer), nonceBefore, "nothing was sent");
+    }
+
     // ---------- the implementation ----------
 
     /// @dev Code, not a token: nobody can initialize it, so it holds no metadata and no roles, not even the deploying
     ///      key's, which also owns the beacon.
     function test_Deploy_TheImplementationIsLocked() public {
-        (StrandsDACAP impl,) = script.deploy(deployerKey);
+        (StrandsDACAP impl,) = script.deploy(deployerKey, block.chainid);
 
         assertEq(uint64(uint256(vm.load(address(impl), INITIALIZABLE_SLOT))), type(uint64).max, "initializers disabled");
 
@@ -69,7 +81,7 @@ contract DeployBeaconScriptTest is BaseTest {
     ///      backend generates its bindings from. CI already checks that artifact against `src/`; this ties the script's
     ///      deploy to it too, so the code on chain is the code the backend was built to call.
     function test_Deploy_TheImplementationIsTheCodeTheBackendWasGeneratedFrom() public {
-        (StrandsDACAP impl,) = script.deploy(deployerKey);
+        (StrandsDACAP impl,) = script.deploy(deployerKey, block.chainid);
 
         bytes memory creation = vm.parseJsonBytes(vm.readFile("abi/StrandsDACAP.json"), ".bytecode");
         address fromArtifact;
