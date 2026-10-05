@@ -454,6 +454,9 @@ forge script script/DeployBeacon.s.sol --sig "sepolia()" --broadcast
 forge script script/CheckBeacon.s.sol --sig "sepolia()"
 ```
 
+Instead of exporting them, you can put both variables in `.env` (template: `.env.example`), which Foundry loads for every
+`forge` command. `.env` is gitignored; keep it that way.
+
 For Ethereum mainnet, `--sig "mainnet()"`. There is no `--rpc-url`: the script forks the named chain's RPC itself and
 broadcasts there. A command that names no chain fails (`run` is not in the ABI) and sends nothing, and the deploy
 refuses before signing if the RPC answers as any chain but the one named. Forge's own `--chain` flag gives no such

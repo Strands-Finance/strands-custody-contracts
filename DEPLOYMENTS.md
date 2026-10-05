@@ -67,17 +67,42 @@ The beacon is to be owned by Derive. `DeployBeacon.s.sol` makes the deploying St
 
 ## Ethereum Sepolia (chain 11155111)
 
-Not deployed yet. Cameron deploys it by hand (decided on 2026-10-05), before Ethereum mainnet, and with the same
-deploying key as mainnet. Derive has no V3 testnet, so this beacon is for Strands' own testing on a public chain;
-nothing of Derive's is on Sepolia. The deploying key owns the beacon.
+Strands' own testnet deploy, ahead of Ethereum mainnet. Derive has no V3 testnet, so nothing of Derive's is on
+Sepolia. Cameron deployed it by hand on 2026-10-05, with the deploying key he means to use on mainnet.
 
-With `ALCHEMY_KEY` and `DEPLOYER_PRIVATE_KEY` in the environment (see "Deploy" in the README):
-1. Dry-run: `forge script script/DeployBeacon.s.sol --sig "sepolia()"`.
-2. Deploy and check: the same with `--broadcast`, then `forge script script/CheckBeacon.s.sol --sig "sepolia()"`.
-   Add the rows here.
+| | Address |
+|---|---|
+| `UpgradeableBeacon` | [`0x47A6aDF49f9D2dF03d1b8e2319A79A0dD47E8Df7`](https://sepolia.etherscan.io/address/0x47A6aDF49f9D2dF03d1b8e2319A79A0dD47E8Df7) |
+| `StrandsDACAP` implementation (current) | [`0x20A5bf6C9F8F64772677fF7acabB0806C7471173`](https://sepolia.etherscan.io/address/0x20A5bf6C9F8F64772677fF7acabB0806C7471173) |
+| Beacon owner (can upgrade every token) | `0x30F10Bc50fCd6CA6d8567A2Bd2685ED975487c3c` — the dev backend's mint-authority hot wallet |
+| Deployer | `0x30F10Bc50fCd6CA6d8567A2Bd2685ED975487c3c` |
 
-Rehearsed on 2026-10-05, on a local anvil fork of Sepolia (`--sig "localFork()"`): 1,571,403 gas, and
-`CheckBeacon.s.sol` passed. A dry run of `--sig "sepolia()"` against Sepolia itself simulated cleanly.
+Backend config, for an environment pointed at Sepolia:
+`DERIVE_CUSTODY_DACAP_BEACON=0x47A6aDF49f9D2dF03d1b8e2319A79A0dD47E8Df7`.
+
+Ownership history:
+
+| Date | Owner | How |
+|---|---|---|
+| 2026-10-05 | `0x30F10Bc50fCd6CA6d8567A2Bd2685ED975487c3c` (dev hot wallet) | The deploying key, set at deploy, tx `0xefe93717…b11b57` |
+
+Implementation history:
+
+| Date | Implementation | Code | Deploy tx (block) | Beacon tx (block) |
+|---|---|---|---|---|
+| 2026-10-05 | `0x20A5bf6C9F8F64772677fF7acabB0806C7471173` | `src/` as on `main` @ `bad9e49` | [`0x40fbe015…1edc877`](https://sepolia.etherscan.io/tx/0x40fbe01525770636ad436ef7f64ae328724ba7a85ee5085fe547ea3aa1edc877) (11852068) | [`0xefe93717…b11b57`](https://sepolia.etherscan.io/tx/0xefe9371740cbe34ed2f34db4af6c42f2ba64d7878a58db9fb8d2666e62b11b57) (11852068), deployed with this implementation |
+
+Deployed with `forge script script/DeployBeacon.s.sol --sig "sepolia()" --broadcast`: 1,571,403 gas (implementation
+1,322,062, beacon 249,341).
+
+Verified after deploy:
+- `forge script script/CheckBeacon.s.sol --sig "sepolia()"` passed every check. The beacon is OpenZeppelin's, owned by
+  the deploying key. The implementation is locked and its code is `abi/StrandsDACAP.json`'s (runtime keccak
+  `0x5f7cd2aac4c1b3d026f88143f6e010e0c5baff660fab14b4eea833da8f7ff11e`). A token deployed against it comes out live.
+- `owner()` and `implementation()` read back as above with `cast call`.
+
+It was rehearsed first on a local anvil fork of Sepolia (`--sig "localFork()"`), then dry-run against Sepolia itself.
+Source is not verified on the explorer; see "Source verification" in the README.
 
 ## Ethereum mainnet (chain 1, Derive V3)
 
