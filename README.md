@@ -5,7 +5,8 @@ Custodial ERC20 token for the Strands platform.
 ## Overview
 
 `StrandsDACAP` is an OpenZeppelin `ERC20Burnable` token gated by
-`AccessControl`. A balance here is a **claim against an off-chain ledger**, so
+`AccessControl`, deployed behind a **beacon proxy** (see
+[Proxy and upgradeability](#proxy-and-upgradeability)). A balance here is a **claim against an off-chain ledger**, so
 destroying supply is privileged. A holder cannot redeem themselves, and cannot
 delegate that power to anyone else via an ERC20 allowance.
 
@@ -81,28 +82,70 @@ destination strands a balance where it is and cannot move it anywhere, least of
 all to the admin. There is no `adminTransfer` escape hatch, and adding one would
 undo that property.
 
-## Deployment is two transactions
+## Proxy and upgradeability
 
-The constructor takes only the token's own metadata and grants
-`DEFAULT_ADMIN_ROLE` to **the deployer**. Both roles are seated by a separate
-`initialize(admin, minter)`, which is `onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs
-exactly once.
+A token is never the `StrandsDACAP` contract itself. It is an OpenZeppelin
+`BeaconProxy`, and that proxy's address is the token's address: the one that
+holds balances, roles, metadata and the allowlist, and the one an integration
+registers.
 
-Both guards are load-bearing. The role check is what makes `initialize`
-un-front-runnable — a CREATE deploy is visible the moment it lands, and with
-only a one-shot guard the first stranger to call would own the token's mint and
-burn authority. The one-shot guard is what stops an admin silently re-seating a
-different minter later under a call named "initialize".
+```
+holder / integration ──► BeaconProxy (one per token: all the state)
+                              │  "which code?"          delegatecall
+                              ├──► UpgradeableBeacon ──► StrandsDACAP implementation
+                              │    (one per chain)       (one per chain: code only)
+```
 
-Between the two transactions the token is **inert** (nobody holds `MINTER_ROLE`,
-so every privileged entrypoint reverts) and **recoverable** (the deployer still
-holds admin and can finish the deploy). `initialize` revokes the deployer's own
-admin unless it *is* the admin, so the role graph afterwards is exactly what the
-arguments say.
+One implementation and one beacon serve every token on a chain. Pointing the
+beacon at a new implementation (`beacon.upgradeTo(newImplementation)`) changes
+the logic of **every token at once**, at the same addresses, with every balance
+intact — which is the point: a change to the token no longer means a burn and a
+re-mint.
 
-`initialize` is **not idempotent** — a second call reverts with
-`InvalidInitialization()`. A caller with a retry path must read `hasRole` first
-rather than re-calling.
+- **Upgrade authority is the beacon's owner, and only that.** It is not a role
+  on the token: `DEFAULT_ADMIN_ROLE` cannot upgrade, and the token has no
+  upgrade function. See [Security](#security) for what that owner can do.
+  The beacon is to be owned by Derive; handing it over is
+  `script/TransferBeaconOwnership.s.sol` (see
+  [Hand the beacon to Derive](#hand-the-beacon-to-derive)).
+- **The implementation is locked.** Its constructor disables initializers, so it
+  can never be made to look like a token.
+- **A new implementation may only append to `DACAPStorage`.** The token's own
+  state lives in one ERC-7201 namespaced struct; reordering or removing a field
+  silently reinterprets every token's storage, and `forge` will not catch it.
+- Nothing in this repo performs an upgrade. `test/token/Proxy.t.sol` proves one
+  keeps state.
+
+## Deployment is one transaction
+
+The proxy's deploy runs `initializeToken(decimals, name, symbol)` in the same
+transaction. It fixes the token's metadata and grants **the deployer** both
+`DEFAULT_ADMIN_ROLE` and `MINTER_ROLE` — what a constructor would do, had the
+token no proxy in front of it. It is the token's only initializer, and the token
+is live the moment the deploy returns: there is no second transaction, so there
+is no window between "deployed" and "usable" for anyone to step into.
+
+```
+Deployer ─▶ new BeaconProxy(beacon, initializeToken(decimals, name, symbol))
+              └─ delegatecall initializeToken      [Initializable version 0 → 1]
+                   metadata fixed · admin = Deployer · minter = Deployer
+```
+
+**Always pass `initializeToken` as the proxy constructor's `data`.** A proxy
+created with empty `data` belongs to whoever calls `initializeToken` first.
+
+**Deploy straight from the key that should hold the roles.** The roles go to the
+proxy's immediate creator, so a factory, a CREATE2 deployer or a batching
+contract that creates the proxy receives both roles instead.
+
+`initializeToken` cannot run again on a deployed token, for anyone — it reverts
+`InvalidInitialization()`. Moving a role elsewhere afterwards (a cold admin, a
+minter multisig) is ordinary `AccessControl`, sent by the deployer: `grantRole`
+to the new holder, then `renounceRole` its own.
+
+An initializer added by a later implementation is `reinitializer(2)`, and must
+also be `onlyRole(DEFAULT_ADMIN_ROLE)`: a beacon upgrade runs no initializer, and
+`reinitializer` alone does not check who calls it.
 
 ## Token
 
@@ -124,9 +167,10 @@ an off-chain ledger rather than instruments anyone trades, so there is no venue
 where a terse symbol earns its ambiguity — and a wallet rendering
 `Strands.DACAP.BitGo.USDC` beside a balance says exactly what the balance is.
 
-All three fields are constructor-only and **immutable**: there is no setter, so a
-token deployed with the wrong name can only be redeployed and re-minted into.
-The constructor rejects an empty `name_` or `symbol_` for that reason.
+All three fields are set by `initializeToken` during the deploy and have **no
+setter**, so a token deployed with the wrong name can only be redeployed and
+re-minted into. `initializeToken` rejects an empty `name_` or `symbol_` for that
+reason.
 
 ## Roles
 
@@ -135,12 +179,12 @@ Two roles, following OpenZeppelin's own division: `DEFAULT_ADMIN_ROLE` is
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and call `initialize` once. **No power over balances.** |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and open transfer destinations. **No power over balances.** |
 | `MINTER_ROLE` | Everything that moves supply: `mint`, `guardMint`, `guardBurn`, `adminBurn`, `burn`, `burnFrom` |
 
-The constructor grants `DEFAULT_ADMIN_ROLE` to the deployer; `initialize` then
-seats both roles at whichever addresses (ideally multisigs / timelocks) should
-hold them, and hands admin on.
+The deploy grants both roles to the deployer. Where they should end up elsewhere
+(ideally multisigs / timelocks), the deployer grants them on and renounces its
+own.
 
 `MINTER_ROLE` reaches every burn path as well as every mint path — the name is
 narrower than the capability. It is deliberate: `AccessControl` warns that
@@ -152,9 +196,8 @@ keeps every escalation visible as a `RoleGranted`.
 ## API
 
 ```solidity
-constructor(uint8 decimals_, string memory name_, string memory symbol_);  // admin -> msg.sender
-
-function initialize(address admin, address minter) external; // DEFAULT_ADMIN_ROLE, once
+// Passed as the BeaconProxy constructor's data, so it runs in the deploy.  admin, minter -> msg.sender
+function initializeToken(uint8 decimals_, string calldata name_, string calldata symbol_) external;
 
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
 function guardMint(address to, uint256 amount, uint256 estimatedSupply) external;   // MINTER_ROLE
@@ -214,21 +257,32 @@ on the reconciler's `Transfer` log for no reason. Redemption is the mirror
 image: minter-driven, and the holder cannot initiate it.
 
 ```bash
-# 1. Deploy + initialize — the script does both in one broadcast, because a token left
-#    uninitialized is inert and only the deployer key can finish it.
-export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
+# 0. Once per chain: the implementation and its beacon. See "Deploy".
+#
+# 1. Deploy. One transaction: the deployer comes out as admin AND minter, so the token
+#    is live when the script returns.
+export BEACON_ADDRESS=0xBeacon DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"
-export MINTER_ADDRESS=0xMinter                                 # defaults to $ADMIN_ADDRESS
 # No --verify. Source publication is deliberately not performed — see "Source verification" below.
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
+export TOKEN=0x...   # the "StrandsDACAP (BeaconProxy) deployed at" address the script printed
+# MINTER_PK / ADMIN_PK below are the minter's and admin's keys: both $DEPLOYER_PRIVATE_KEY unless step 2 moved a role.
 
-# 2. ...or, deploying by hand, seat the roles yourself. Run this from the DEPLOYER key —
-#    it is the only address holding DEFAULT_ADMIN_ROLE until this call hands it over.
-cast send $TOKEN "initialize(address,address)" $ADMIN $MINTER \
+# 2. Optional: move a role off the deployer key — grant it on, then renounce your own.
+#    Run from the DEPLOYER key. Skip it to keep one key as admin and minter (the backend's shape).
+DEPLOYER=$(cast wallet address --private-key $DEPLOYER_PRIVATE_KEY)
+export MINTER=0xMinter                                         # the new MINTER_ROLE holder
+cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak MINTER_ROLE) $MINTER \
+  --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
+cast send $TOKEN "renounceRole(bytes32,address)" $(cast keccak MINTER_ROLE) $DEPLOYER \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
 
+# Every amount below is in BASE UNITS of the token's decimals. Convert with `cast parse-units`:
+# `$(cast parse-units 1000 $DECIMALS)` is 1,000 tokens. `1000ether` is 10^21 base units — on a
+# 6-decimal token that is 10^15 tokens, not 1,000.
+#
 # 3. Issue straight to the holder
-cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
+cast send $TOKEN "mint(address,uint256)" $HOLDER $(cast parse-units 1000 $DECIMALS) \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 
 # 4. Open the destination. Until this lands, step 5 reverts with
@@ -237,16 +291,17 @@ cast send $TOKEN "setDestinationAllowed(address,bool)" $DEST true \
   --rpc-url $RPC_URL --private-key $ADMIN_PK
 
 # 5. Now the holder can move their balance
-cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
+cast send $TOKEN "transfer(address,uint256)" $DEST $(cast parse-units 100 $DECIMALS) \
   --rpc-url $RPC_URL --private-key $HOLDER_PK
 
-# 6. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Prefer
-#    guardBurn, which refuses the burn unless the chain's supply still matches the
-#    reading the amount was decided against; adminBurn is the unguarded fallback.
-cast send $TOKEN "guardBurn(address,uint256,uint256)" $HOLDER 100ether $SUPPLY_YOU_READ \
+# 6. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Use guardBurn,
+#    which refuses the burn unless the chain's supply still matches the reading the amount
+#    was decided against ($SUPPLY_YOU_READ is `totalSupply()`, in base units).
+cast send $TOKEN "guardBurn(address,uint256,uint256)" $HOLDER $(cast parse-units 100 $DECIMALS) $SUPPLY_YOU_READ \
   --rpc-url $RPC_URL --private-key $MINTER_PK
-cast send $TOKEN "adminBurn(address,uint256)" $HOLDER 100ether \
-  --rpc-url $RPC_URL --private-key $MINTER_PK
+#    ...OR, INSTEAD of guardBurn (never both — that burns twice), the unguarded fallback:
+# cast send $TOKEN "adminBurn(address,uint256)" $HOLDER $(cast parse-units 100 $DECIMALS) \
+#   --rpc-url $RPC_URL --private-key $MINTER_PK
 ```
 
 ## Security
@@ -269,11 +324,35 @@ visible rather than standing. This is the reason the burn surface was NOT folded
 onto `DEFAULT_ADMIN_ROLE` when `CUSTODIAN_ROLE` was removed — doing so would
 have deleted that announcement and forced the governance key to stay hot.
 
-Between deploy and `initialize`, `DEFAULT_ADMIN_ROLE` sits on the **deployer
-key**. Keep that window short and the key controlled: it is the one address that
-can decide who the minter will be.
+The deploy seats both roles on the **deployer key**, with no window in between
+for anyone else to claim them. Until it hands a role on, that key alone is the
+token's governance and its operations, so it must be controlled accordingly.
+
+**The beacon's owner sits above all of this.** It can point every token at new
+code, and new code can do anything: mint without `MINTER_ROLE`, ignore the
+allowlist, burn without emitting `Burned`. Every guarantee in this document
+holds only for as long as the beacon names an implementation that keeps it.
+It is the most powerful key in the system.
+
+**The beacon is to be owned by Derive.** Cameron decided this on 2026-10-05,
+accepting that Derive can then replace the code of every token on the chain at
+once. Derive also receives each token's `DEFAULT_ADMIN_ROLE` during enrolment,
+so with both it needs nobody else to mint, burn or change the code. Strands
+keeps `MINTER_ROLE` and, today, its own `DEFAULT_ADMIN_ROLE` seat: enrolment
+grants Derive the role without Strands renouncing its own. While Strands holds
+that seat, Derive revoking Strands' minter does not stick, because Strands can
+grant it back. An upgrade by Derive changes
+the code under the backend with no change on the Strands side, so an
+implementation the backend's bindings were not generated from can break or alter
+every call it makes.
 
 In production:
+
+- Monitor the beacon's `Upgraded` and `OwnershipTransferred` events. They are
+  the only signal that the code behind every token, or who can change it, has
+  moved.
+- Recommend that Derive hold the beacon in a timelock-controlled multisig rather
+  than an EOA. Once the beacon is theirs, that choice is theirs.
 
 - Hold `MINTER_ROLE` in a multisig with operational signers only, and keep at
   least two holders of it. It is the only key that can redeem.
@@ -296,9 +375,9 @@ In production:
 - Monitor `Burned`. All four paths that destroy supply emit it, so it is the
   complete record of redemption, and `burnedBy` always names a `MINTER_ROLE`
   holder.
-- **Initialize in the same operation as the deploy.** An uninitialized token is
-  harmless but unfinished, and the only key that can complete it is the one that
-  deployed it.
+- **Deploy from the key that should hold the roles, directly.** The deploy
+  seats its immediate creator; deploying through a factory or a CREATE2 deployer
+  would hand that contract both roles.
 
 ## Build & test
 
@@ -314,13 +393,27 @@ forge test -vvv
 
 ## Deploy
 
+**Once per chain** — the implementation and the beacon every token points at:
+
 ```bash
-export ADMIN_ADDRESS=0x...
 export DEPLOYER_PRIVATE_KEY=0x...
-export DECIMALS=6                                  # optional, defaults to 18
+export BEACON_OWNER=0x...                          # required; the only address that can upgrade
+forge script script/DeployBeacon.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast
+```
+
+The `UpgradeableBeacon` address it prints is `BEACON_ADDRESS` below, and what the
+backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`.
+
+**Per token** — a `BeaconProxy` in front of it:
+
+```bash
+export BEACON_ADDRESS=0x...                        # from DeployBeacon above
+export DEPLOYER_PRIVATE_KEY=0x...                  # becomes the token's admin AND minter
+export DECIMALS=6                                  # REQUIRED: the asset's native decimals (USDC 6, BTC 8, ETH 18)
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC"       # optional, defaults to "Strands.DACAP"
 export TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"     # optional, defaults to "Strands.DACAP"
-export MINTER_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --broadcast
@@ -334,9 +427,47 @@ want of an environment variable. But the label is permanent, and taking the defa
 gives you a token indistinguishable from every other one on an explorer, which is
 the whole thing these arguments exist to fix.
 
-The script deploys and initializes in one broadcast, so the token is live when
-it returns. Deploying by hand instead means the deployer key must follow up with
-`initialize(admin, minter)` — until it does, the token is inert.
+The deploy is the whole of initialization, so the token is live when the script
+returns, with the deployer key as both admin and minter. Moving either role
+elsewhere is a later `grantRole` then `renounceRole` from that key (see
+[Operating the token](#operating-the-token)).
+
+### Hand the beacon to Derive
+
+`script/TransferBeaconOwnership.s.sol` moves the beacon's ownership, and with it
+the power to upgrade every token on the chain, from the current owner's key to
+`NEW_BEACON_OWNER`. `UpgradeableBeacon` uses OpenZeppelin's one-step `Ownable`:
+the transfer takes effect in the same transaction and cannot be taken back, so a
+wrong address loses upgrade control of every token for good.
+
+1. Get Derive's address and confirm it with them on a second channel. The
+   beacon and its current owner are in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
+2. Simulate on a local fork. The fork runs under a different chain id, so
+   nothing signed there is valid on the real chain:
+
+   ```bash
+   anvil --fork-url $RPC_URL --chain-id 31337 --port 8546 &
+   export BEACON_ADDRESS=0x... NEW_BEACON_OWNER=0x... BEACON_OWNER_PRIVATE_KEY=0x...
+   forge script script/TransferBeaconOwnership.s.sol --rpc-url http://127.0.0.1:8546 --broadcast
+   ```
+
+   Check the logged current and new owner, and whether the new owner is a
+   contract (a Safe) or a plain wallet.
+3. Broadcast for real, then read the owner back:
+
+   ```bash
+   forge script script/TransferBeaconOwnership.s.sol --rpc-url $RPC_URL --broadcast
+   cast call $BEACON_ADDRESS 'owner()(address)' --rpc-url $RPC_URL   # must print NEW_BEACON_OWNER
+   ```
+
+4. Add a row to that chain's ownership history in `DEPLOYMENTS.md`.
+
+The script refuses before signing anything if the key is not the beacon's owner,
+or if the new owner is zero or already the owner. A beacon owned by a multisig
+cannot use it: send `transferOwnership(newOwner)` from the multisig instead.
+
+On a chain with no beacon yet, `DeployBeacon.s.sol` can instead take Derive's
+address as `BEACON_OWNER`, so no transfer is needed.
 
 ## Source verification
 
@@ -366,6 +497,13 @@ Pre-extracted artifacts in [`abi/`](./abi):
 | `abi/StrandsDACAP.abi` | Raw ABI JSON array | Vanilla `Nethereum.Generator.Console` |
 | `abi/StrandsDACAP.bin` | Creation bytecode hex (no `0x` prefix) | Vanilla `Nethereum.Generator.Console` (deployment support) |
 | `abi/StrandsDACAP.standard-input.json` | `{solcLongVersion, input}` wrapping the solc standard JSON input that produced the bytecode | Block-explorer source verification, via the consumer's generated `SOURCES` constant |
+| `abi/BeaconProxy.json` | Hardhat-style artifact for OpenZeppelin's `BeaconProxy`, compiled with this repo's settings | Strands `ContractInterfaceGenerator` — **this is the bytecode a consumer deploys per token** |
+
+`StrandsDACAP.json` is the token's ABI, which is what a consumer calls through
+the proxy. Its `bytecode` is the *implementation's* — deployed once per chain by
+`DeployBeacon.s.sol`, never per token. A consumer deploys `BeaconProxy`, with the
+beacon address and ABI-encoded `initializeToken(...)` calldata as its two
+constructor arguments.
 
 ### Strands ContractInterfaceGenerator
 
@@ -375,6 +513,10 @@ the CIG normally. The artifact carries `bytecode` inline, so that copy is the
 whole ABI/bytecode sync — the generator bakes that value into
 `StrandsDACAPDeploymentBase.BYTECODE`, and splicing the ABI and the
 creation bytecode from separate files is how the two drift apart.
+
+Copy `abi/BeaconProxy.json` the same way (e.g.
+`Sources/Strands/BeaconProxy/BeaconProxy.json`): its generated deployment class is
+the one the consumer sends.
 
 Copy `abi/StrandsDACAP.standard-input.json` alongside it, under the same stem
 (`Sources/Strands/StrandsDACAP/StrandsDACAP.standard-input.json`). The generator
@@ -419,6 +561,23 @@ with open("abi/StrandsDACAP.json", "w") as f:
     f.write("\n")
 PY
 
+# The proxy a consumer deploys per token. Unchanged by an edit to src/ — it moves only with the
+# OpenZeppelin submodule or the compiler settings — but regenerated here so it cannot be forgotten.
+forge inspect BeaconProxy abi --json > /tmp/BeaconProxy.abi
+forge inspect BeaconProxy bytecode | sed 's/^0x//' > /tmp/BeaconProxy.bin
+python3 - <<'PY3'
+import json
+with open("abi/BeaconProxy.json", "w") as f:
+    json.dump({
+        "_format": "hh-sol-artifact-1",
+        "contractName": "BeaconProxy",
+        "sourceName":   "lib/openzeppelin-contracts/contracts/proxy/beacon/BeaconProxy.sol",
+        "abi": json.load(open("/tmp/BeaconProxy.abi")),
+        "bytecode": "0x" + open("/tmp/BeaconProxy.bin").read().strip(),
+    }, f, indent=2)
+    f.write("\n")
+PY3
+
 # The verification payload. Nothing above produces it and nothing else reads it, so it is the
 # one artifact that rots silently — see "Source verification". The address is a placeholder;
 # --show-standard-json-input prints the payload locally and contacts no explorer.
@@ -437,8 +596,8 @@ with open("abi/StrandsDACAP.standard-input.json", "w") as f:
 PY2
 ```
 
-Then copy **both** `abi/StrandsDACAP.json` and `abi/StrandsDACAP.standard-input.json`
-over the consumer's generator source and re-run the generator. Updating one without
+Then copy `abi/StrandsDACAP.json`, `abi/StrandsDACAP.standard-input.json` and
+`abi/BeaconProxy.json` over the consumer's generator source and re-run the generator. Updating one without
 the other leaves the generated `BYTECODE` constant deploying an older contract, or
 the generated `SOURCES` constant describing one.
 

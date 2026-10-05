@@ -3,14 +3,19 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
-import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { StrandsDACAP } from "../src/StrandsDACAP.sol";
 import { ITransferAllowlist } from "../src/interfaces/ITransferAllowlist.sol";
 
 /// @title  Shared test fixture
-/// @notice Deploys the token, seats DEFAULT_ADMIN_ROLE / MINTER_ROLE through
-///         `initialize` and funds `alice` with `INITIAL_MINT`. Every suite under
-///         `test/` extends this so the starting state is identical across files.
+/// @notice Deploys the implementation and its beacon once, then the token as a
+///         `BeaconProxy` — the only shape a token is ever deployed in. The
+///         deploy seats `admin` as admin and minter; the fixture then hands
+///         MINTER_ROLE to `minter` and funds `alice` with `INITIAL_MINT`. Every suite under `test/` extends this so
+///         the starting state is identical across files, and so every suite runs
+///         THROUGH the proxy without saying so.
 /// @dev    The transfer allowlist starts EMPTY and `setUp` opens nothing. That
 ///         is what makes the mint and burn suites double as the proof that
 ///         issuance and redemption are exempt: they run start to finish against
@@ -18,6 +23,14 @@ import { ITransferAllowlist } from "../src/interfaces/ITransferAllowlist.sol";
 ///         say so in their own `setUp` override.
 abstract contract BaseTest is Test {
     StrandsDACAP internal token;
+
+    /// @dev The code every proxy delegates to, and the beacon that names it. One of each, however many
+    ///      tokens a suite deploys.
+    StrandsDACAP internal implementation;
+    UpgradeableBeacon internal beacon;
+
+    /// @dev Owns the beacon and nothing else: no role on any token. The one address that can upgrade.
+    address internal beaconOwner = makeAddr("beaconOwner");
 
     address internal admin = makeAddr("admin");
     address internal minter = makeAddr("minter");
@@ -49,17 +62,17 @@ abstract contract BaseTest is Test {
     event Initialized(uint64 version);
 
     function setUp() public virtual {
-        // This test contract is the deployer, so the constructor seats IT as DEFAULT_ADMIN_ROLE — which is
-        // what lets it call `initialize` and hand the role on to `admin` in the same step. No `vm.prank`
-        // wrapper: pranking the deploy would seat a different admin than the one that initializes.
-        token = new StrandsDACAP(18, NAME, SYMBOL);
+        implementation = new StrandsDACAP();
+        beacon = new UpgradeableBeacon(address(implementation), beaconOwner);
 
-        DEFAULT_ADMIN_ROLE = token.DEFAULT_ADMIN_ROLE();
-        MINTER_ROLE = token.MINTER_ROLE();
+        // Read before the first deploy, which uses them to hand MINTER_ROLE on. The implementation answers for
+        // every proxy: both are constants in its code.
+        DEFAULT_ADMIN_ROLE = implementation.DEFAULT_ADMIN_ROLE();
+        MINTER_ROLE = implementation.MINTER_ROLE();
 
-        // Hands DEFAULT_ADMIN_ROLE to `admin` and revokes this contract's, so `admin` is the ONLY holder —
-        // `AdminLifecycle.t.sol`'s "last admin" assertions depend on that being exactly true.
-        token.initialize(admin, minter);
+        // `admin` deploys, so `admin` is the ONLY admin — `AdminLifecycle.t.sol`'s "last admin" assertions depend
+        // on that being exactly true — and `minter` the only minter.
+        token = _deploy(18, NAME, SYMBOL);
 
         vm.prank(minter);
         token.mint(alice, INITIAL_MINT);
@@ -67,18 +80,34 @@ abstract contract BaseTest is Test {
 
     // ---------- fixtures ----------
 
-    /// @dev A token at an arbitrary magnitude, wired like the fixture's. Metadata is deliberately generic —
-    ///      the suites that use this are about arithmetic, and `Metadata.t.sol` owns naming. The role ids are
-    ///      keccak constants, so the cached MINTER_ROLE applies to any instance.
-    function _deployWithDecimals(uint8 decimals_) internal returns (StrandsDACAP t) {
-        t = new StrandsDACAP(decimals_, "Strands.DACAP.Fixture", "Strands.DACAP.Fixture");
-        t.initialize(admin, minter);
+    /// @dev A token exactly as production deploys one: a `BeaconProxy` created by `deployer`, whose constructor
+    ///      runs `initializeToken` in the same transaction. `deployer` comes out holding DEFAULT_ADMIN_ROLE AND
+    ///      MINTER_ROLE, and nobody else holds anything. The encoding is done before the prank, so the prank
+    ///      lands on the creation itself.
+    function _deployAs(address deployer, uint8 decimals_, string memory name_, string memory symbol_)
+        internal
+        returns (StrandsDACAP t)
+    {
+        bytes memory init = abi.encodeCall(StrandsDACAP.initializeToken, (decimals_, name_, symbol_));
+        vm.prank(deployer);
+        t = StrandsDACAP(address(new BeaconProxy(address(beacon), init)));
     }
 
-    /// @dev A deployed but DELIBERATELY UNINITIALIZED token — no minter, and this test contract still holding
-    ///      DEFAULT_ADMIN_ROLE. The state a deploy leaves behind before its second transaction.
-    function _deployUninitialized() internal returns (StrandsDACAP t) {
-        t = new StrandsDACAP(18, NAME, SYMBOL);
+    /// @dev A token wired like the fixture's: deployed by `admin`, which then hands MINTER_ROLE to `minter` and
+    ///      gives up its own — the ordinary grant-then-renounce hand-off, after the deploy. Governance and
+    ///      operations end up on separate addresses, which is the standing state the role suites assume.
+    function _deploy(uint8 decimals_, string memory name_, string memory symbol_) internal returns (StrandsDACAP t) {
+        t = _deployAs(admin, decimals_, name_, symbol_);
+        vm.startPrank(admin);
+        t.grantRole(MINTER_ROLE, minter);
+        t.renounceRole(MINTER_ROLE, admin);
+        vm.stopPrank();
+    }
+
+    /// @dev A token at an arbitrary magnitude, wired like the fixture's. Metadata is deliberately generic —
+    ///      the suites that use this are about arithmetic, and `Metadata.t.sol` owns naming.
+    function _deployWithDecimals(uint8 decimals_) internal returns (StrandsDACAP t) {
+        t = _deploy(decimals_, "Strands.DACAP.Fixture", "Strands.DACAP.Fixture");
     }
 
     // ---------- allowlist arrangement (admin-pranked) ----------
@@ -128,7 +157,7 @@ abstract contract BaseTest is Test {
         vm.expectRevert(IAccessControl.AccessControlBadConfirmation.selector);
     }
 
-    /// @dev Expect a second `initialize` (or one on an already-initialized token) to be refused.
+    /// @dev Expect `initializeToken` on a token that already ran it (or on the locked implementation) to be refused.
     function _expectAlreadyInitialized() internal {
         vm.expectRevert(Initializable.InvalidInitialization.selector);
     }

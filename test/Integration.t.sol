@@ -12,7 +12,6 @@ contract IntegrationTest is BaseTest {
 
     function test_HappyPath_MintTransferBurn() public {
         // Baseline that setUp established: token deployed, roles seated, alice funded.
-        assertTrue(token.initialized());
         assertTrue(token.hasRole(MINTER_ROLE, minter));
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertEq(token.balanceOf(alice), INITIAL_MINT);

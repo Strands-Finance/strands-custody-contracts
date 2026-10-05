@@ -4,6 +4,11 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["lib"]
+# Only remappings.txt applies. Auto-detection adds a remapping for every nested submodule that happens to be
+# checked out (CI clones recursively, a plain `forge install` does not), and the remapping list is hashed into
+# each contract's metadata — so the same source compiled to different bytecode on different machines and the
+# `abi/ matches src/` check failed on a tree that was in sync.
+auto_detect_remappings = false
 solc = "0.8.24"
 optimizer = true
 optimizer_runs = 200

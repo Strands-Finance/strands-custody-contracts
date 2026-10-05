@@ -24,11 +24,13 @@ contract RolesTest is BaseTest {
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
     }
 
-    /// @dev The admin holds the admin role and nothing else. An admin that came
-    ///      out of `initialize` holding MINTER_ROLE would be able to mint or burn
-    ///      with no visible grant, which is the whole point of keeping governance
-    ///      and operations apart. `Initialization.t.sol` owns the seating itself;
-    ///      this is the standing state every suite here assumes.
+    /// @dev The admin holds the admin role and nothing else. The deploy seats
+    ///      its deployer as minter too, so an admin that kept that seat could
+    ///      mint or burn with no grant anyone sees in the role history — the
+    ///      fixture hands it to `minter` and renounces it, as an operator
+    ///      separating governance from operations would. `Initialization.t.sol`
+    ///      owns the deploy itself; this is the standing state every suite here
+    ///      assumes.
     function test_Admin_HoldsNoOperatingRole() public view {
         assertFalse(token.hasRole(MINTER_ROLE, admin), "admin must not be a minter");
     }
@@ -249,8 +251,8 @@ contract RolesTest is BaseTest {
     /// @dev Re-granting a held role and revoking an unheld one are both no-ops
     ///      rather than reverts, which is what lets an operator re-run a role fix
     ///      without first working out which half of it already landed. Note the
-    ///      contrast with `initialize`, which is deliberately NOT idempotent —
-    ///      see `Initialization.t.sol`.
+    ///      contrast with `initializeToken`, which runs once, inside the deploy,
+    ///      and refuses every later call — see `Initialization.t.sol`.
     function test_GrantAndRevoke_AreIdempotent() public {
         vm.startPrank(admin);
         token.grantRole(MINTER_ROLE, minter); // already held

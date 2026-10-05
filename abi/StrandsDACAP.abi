@@ -1,23 +1,7 @@
 [
   {
     "type": "constructor",
-    "inputs": [
-      {
-        "name": "decimals_",
-        "type": "uint8",
-        "internalType": "uint8"
-      },
-      {
-        "name": "name_",
-        "type": "string",
-        "internalType": "string"
-      },
-      {
-        "name": "symbol_",
-        "type": "string",
-        "internalType": "string"
-      }
-    ],
+    "inputs": [],
     "stateMutability": "nonpayable"
   },
   {
@@ -303,34 +287,26 @@
   },
   {
     "type": "function",
-    "name": "initialize",
+    "name": "initializeToken",
     "inputs": [
       {
-        "name": "admin",
-        "type": "address",
-        "internalType": "address"
+        "name": "decimals_",
+        "type": "uint8",
+        "internalType": "uint8"
       },
       {
-        "name": "minter",
-        "type": "address",
-        "internalType": "address"
+        "name": "name_",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "symbol_",
+        "type": "string",
+        "internalType": "string"
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "initialized",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
