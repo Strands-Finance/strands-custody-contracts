@@ -105,6 +105,9 @@ re-mint.
 - **Upgrade authority is the beacon's owner, and only that.** It is not a role
   on the token: `DEFAULT_ADMIN_ROLE` cannot upgrade, and the token has no
   upgrade function. See [Security](#security) for what that owner can do.
+  The beacon is to be owned by Derive; handing it over is
+  `script/TransferBeaconOwnership.s.sol` (see
+  [Hand the beacon to Derive](#hand-the-beacon-to-derive)).
 - **The implementation is locked.** Its constructor disables initializers, so it
   can never be made to look like a token.
 - **A new implementation may only append to `DACAPStorage`.** The token's own
@@ -318,12 +321,24 @@ can decide who the minter will be.
 code, and new code can do anything: mint without `MINTER_ROLE`, ignore the
 allowlist, burn without emitting `Burned`. Every guarantee in this document
 holds only for as long as the beacon names an implementation that keeps it.
-Treat that key as the most powerful one in the system.
+It is the most powerful key in the system.
+
+**The beacon is to be owned by Derive.** Cameron decided this on 2026-10-05,
+accepting that Derive can then replace the code of every token on the chain at
+once. Derive also receives each token's `DEFAULT_ADMIN_ROLE` during enrolment,
+so with both it needs nobody else to mint, burn or change the code. What Strands
+keeps is `MINTER_ROLE`, which Derive can revoke. An upgrade by Derive changes
+the code under the backend with no change on the Strands side, so an
+implementation the backend's bindings were not generated from can break or alter
+every call it makes.
 
 In production:
 
-- Hold the beacon's ownership in a timelock-controlled multisig, separate from
-  both roles. Monitor the beacon's `Upgraded` event.
+- Monitor the beacon's `Upgraded` and `OwnershipTransferred` events. They are
+  the only signal that the code behind every token, or who can change it, has
+  moved.
+- Recommend that Derive hold the beacon in a timelock-controlled multisig rather
+  than an EOA. Once the beacon is theirs, that choice is theirs.
 
 - Hold `MINTER_ROLE` in a multisig with operational signers only, and keep at
   least two holders of it. It is the only key that can redeem.
@@ -403,6 +418,43 @@ the whole thing these arguments exist to fix.
 The script deploys and initializes in one broadcast, so the token is live when
 it returns. Deploying by hand instead means the deployer key must follow up with
 `initialize(admin, minter)` — until it does, the token is inert.
+
+### Hand the beacon to Derive
+
+`script/TransferBeaconOwnership.s.sol` moves the beacon's ownership, and with it
+the power to upgrade every token on the chain, from the current owner's key to
+`NEW_BEACON_OWNER`. `UpgradeableBeacon` uses OpenZeppelin's one-step `Ownable`:
+the transfer takes effect in the same transaction and cannot be taken back, so a
+wrong address loses upgrade control of every token for good.
+
+1. Get Derive's address and confirm it with them on a second channel. The
+   beacon and its current owner are in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
+2. Simulate on a local fork. The fork runs under a different chain id, so
+   nothing signed there is valid on the real chain:
+
+   ```bash
+   anvil --fork-url $RPC_URL --chain-id 31337 --port 8546 &
+   export BEACON_ADDRESS=0x... NEW_BEACON_OWNER=0x... BEACON_OWNER_PRIVATE_KEY=0x...
+   forge script script/TransferBeaconOwnership.s.sol --rpc-url http://127.0.0.1:8546 --broadcast
+   ```
+
+   Check the logged current and new owner, and whether the new owner is a
+   contract (a Safe) or a plain wallet.
+3. Broadcast for real, then read the owner back:
+
+   ```bash
+   forge script script/TransferBeaconOwnership.s.sol --rpc-url $RPC_URL --broadcast
+   cast call $BEACON_ADDRESS 'owner()(address)' --rpc-url $RPC_URL   # must print NEW_BEACON_OWNER
+   ```
+
+4. Add a row to that chain's ownership history in `DEPLOYMENTS.md`.
+
+The script refuses before signing anything if the key is not the beacon's owner,
+or if the new owner is zero or already the owner. A beacon owned by a multisig
+cannot use it: send `transferOwnership(newOwner)` from the multisig instead.
+
+On a chain with no beacon yet, `DeployBeacon.s.sol` can instead take Derive's
+address as `BEACON_OWNER`, so no transfer is needed.
 
 ## Source verification
 
