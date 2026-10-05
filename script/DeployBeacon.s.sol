@@ -9,6 +9,7 @@ import { Networks } from "./Networks.sol";
 /// @notice The once-per-chain deploy: the StrandsDACAP implementation and the beacon that names it. Every token
 ///         on the chain is a `BeaconProxy` pointing at this beacon, so its address is what the backend is
 ///         configured with (`DERIVE_CUSTODY_DACAP_BEACON`) and what `Deploy.s.sol` takes as `BEACON_ADDRESS`.
+///         Check what it deployed with `CheckBeacon.s.sol`.
 ///
 ///         The command names the chain; the script holds its RPC and chain id (see `Networks`):
 ///

@@ -4,7 +4,9 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["lib"]
-fs_permissions = [{ access = "read", path = "./abi" }]
+# ./abi: the artifacts the backend deploys and calls, which tests and CheckBeacon.s.sol compare against.
+# ./broadcast: where CheckBeacon.s.sol finds the beacon DeployBeacon.s.sol last deployed on the chain.
+fs_permissions = [{ access = "read", path = "./abi" }, { access = "read", path = "./broadcast" }]
 # Only remappings.txt applies. Auto-detection adds a remapping for every nested submodule that happens to be
 # checked out (CI clones recursively, a plain `forge install` does not), and the remapping list is hashed into
 # each contract's metadata — so the same source compiled to different bytecode on different machines and the

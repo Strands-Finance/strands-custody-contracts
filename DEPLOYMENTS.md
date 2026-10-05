@@ -73,9 +73,11 @@ nothing of Derive's is on Sepolia. The deploying key owns the beacon.
 
 With `ALCHEMY_KEY` and `DEPLOYER_PRIVATE_KEY` in the environment (see "Deploy" in the README):
 1. Dry-run: `forge script script/DeployBeacon.s.sol --sig "sepolia()"`.
-2. Deploy: the same with `--broadcast`. Add the rows here.
+2. Deploy and check: the same with `--broadcast`, then `forge script script/CheckBeacon.s.sol --sig "sepolia()"`.
+   Add the rows here.
 
-Rehearsed on 2026-10-05, on a local anvil fork of Sepolia (`--sig "localFork()"`): 1,571,403 gas. A dry run of `--sig "sepolia()"` against Sepolia itself simulated cleanly.
+Rehearsed on 2026-10-05, on a local anvil fork of Sepolia (`--sig "localFork()"`): 1,571,403 gas, and
+`CheckBeacon.s.sol` passed. A dry run of `--sig "sepolia()"` against Sepolia itself simulated cleanly.
 
 ## Ethereum mainnet (chain 1, Derive V3)
 
@@ -89,9 +91,11 @@ README):
 1. Run the fork suite in `test/fork/`. On a fork of Ethereum mainnet it runs `DeployBeacon.s.sol`, deploys a token,
    hands the token's admin role and the beacon to Derive, and checks that everything comes out correctly deployed,
    initialized and permissioned.
-2. Rehearse on a local anvil fork of mainnet (`--chain-id 31337`): `DeployBeacon.s.sol --sig "localFork()"`.
+2. Rehearse on a local anvil fork of mainnet (`--chain-id 31337`): `DeployBeacon.s.sol` then `CheckBeacon.s.sol`, both
+   `--sig "localFork()"`.
 3. Dry-run: `forge script script/DeployBeacon.s.sol --sig "mainnet()"`.
-4. Deploy: the same with `--broadcast`. Add the rows here.
+4. Deploy and check: the same with `--broadcast`, then `forge script script/CheckBeacon.s.sol --sig "mainnet()"`.
+   Add the rows here.
 
 Rehearsed on 2026-10-05, on a fork at block 26,129,310: the implementation took 1,322,062 gas and the beacon 249,341,
-1,571,403 in all.
+1,571,403 in all. `CheckBeacon.s.sol` passed against it.

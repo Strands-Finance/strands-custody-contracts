@@ -444,13 +444,14 @@ and so is the one address that can upgrade every token, until it hands the beaco
 
 The command names the chain, and the scripts hold each chain's RPC and chain id (`script/Networks.sol`). The RPCs are
 the backend's Alchemy endpoints, so the only inputs are two environment variables, the same two on every chain. A
-deploy is one command:
+deploy, and the [check of what landed](#check-the-deployed-beacon), are two commands:
 
 ```bash
 export ALCHEMY_KEY=...                 # the backend's Alchemy key (see "Fork test"); never commit it
 export DEPLOYER_PRIVATE_KEY=0x...      # the same key on Sepolia and mainnet: deploys both, and owns the beacon
 
 forge script script/DeployBeacon.s.sol --sig "sepolia()" --broadcast
+forge script script/CheckBeacon.s.sol --sig "sepolia()"
 ```
 
 For Ethereum mainnet, `--sig "mainnet()"`. There is no `--rpc-url`: the script forks the named chain's RPC itself and
@@ -458,20 +459,21 @@ broadcasts there. A command that names no chain fails (`run` is not in the ABI) 
 refuses before signing if the RPC answers as any chain but the one named. Forge's own `--chain` flag gives no such
 guard: it broadcasts to whatever chain the RPC is on.
 
-Before the real deploy, rehearse it on a local fork, then dry-run against the chain:
+Before the real deploy, rehearse both on a local fork, then dry-run against the chain:
 
 ```bash
 # Rehearse. --chain-id 31337 keeps anything signed on the fork invalid on the real chain.
 anvil --fork-url https://eth-sepolia.g.alchemy.com/v2/$ALCHEMY_KEY --chain-id 31337 --port 8546 &
 forge script script/DeployBeacon.s.sol --sig "localFork()" --broadcast
+forge script script/CheckBeacon.s.sol --sig "localFork()"
 
 # Dry run against the real chain: no --broadcast, so nothing is sent.
 forge script script/DeployBeacon.s.sol --sig "sepolia()"
 ```
 
 The `UpgradeableBeacon` address it prints is `BEACON_ADDRESS` below, and what the
-backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`. Record it in
-[`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
+backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`. Check it before the
+backend is pointed at it, then record it in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
 
 **Per token** — a `BeaconProxy` in front of it:
 
@@ -498,6 +500,34 @@ The deploy is the whole of initialization, so the token is live when the script
 returns, with the deployer key as both admin and minter. Moving either role
 elsewhere is a later `grantRole` then `renounceRole` from that key (see
 [Operating the token](#operating-the-token)).
+
+### Check the deployed beacon
+
+`script/CheckBeacon.s.sol` checks the beacon `DeployBeacon.s.sol` deployed. Run it
+straight after the deploy, naming the same chain, with the same environment:
+
+```bash
+forge script script/CheckBeacon.s.sol --sig "sepolia()"    # or "mainnet()"
+```
+
+It finds the beacon in `DeployBeacon.s.sol`'s record of its last broadcast through
+the same entrypoint, `broadcast/DeployBeacon.s.sol/<chain id>/<entrypoint>-latest.json`.
+A dry run records under `dry-run/`, so it never stands in for a deploy. To check
+another beacon, set `BEACON_ADDRESS`.
+
+It checks that:
+- the beacon is OpenZeppelin's `UpgradeableBeacon`, byte for byte, owned by the
+  deploying key;
+- the implementation is locked, and its code is exactly `abi/StrandsDACAP.json`'s:
+  the artifact the backend's bindings were generated from;
+- a token deployed against the beacon from `abi/BeaconProxy.json`, as the backend
+  deploys one, follows it, has its metadata, seats only its deployer as admin and
+  minter, and can mint at once.
+
+The first failed check stops the run and says what failed. **It sends nothing,
+even with `--broadcast`:** it never starts a broadcast, so the token it deploys
+exists only in forge's local simulation. The key is read only to know which owner
+to expect.
 
 ### Hand the beacon to Derive
 
