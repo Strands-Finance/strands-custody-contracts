@@ -80,8 +80,9 @@ contract ProxyTest is BaseTest {
     }
 
     /// @dev Upgrade authority is the beacon's owner and nobody else. In particular NOT a token's admin — the
-    ///      backend grants DEFAULT_ADMIN_ROLE onward, and that hand-off must not carry the power to replace
-    ///      the token's code.
+    ///      backend grants DEFAULT_ADMIN_ROLE onward, and that grant carries no power over the code. Handing over
+    ///      the beacon is its own explicit step (`script/TransferBeaconOwnership.s.sol`), even when, as with Derive,
+    ///      the same party ends up holding both.
     function test_OnlyTheBeaconOwnerCanUpgrade() public {
         address v2 = address(new StrandsDACAPV2());
 
