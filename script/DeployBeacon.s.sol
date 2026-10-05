@@ -10,12 +10,15 @@ import { StrandsDACAP } from "../src/StrandsDACAP.sol";
 ///         configured with (`DERIVE_CUSTODY_DACAP_BEACON`) and what `Deploy.s.sol` takes as `BEACON_ADDRESS`.
 contract DeployBeacon is Script {
     function run() external returns (StrandsDACAP implementation, UpgradeableBeacon beacon) {
-        uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
         // The one address that can point the beacon at new code, and so replace the logic of EVERY token at
         // once. Required rather than defaulted to the deployer: it is the most powerful key in the system and
         // should be chosen, not inherited.
-        address owner = vm.envAddress("BEACON_OWNER");
+        return deploy(vm.envUint("DEPLOYER_PRIVATE_KEY"), vm.envAddress("BEACON_OWNER"));
+    }
 
+    /// @dev Separate from `run` so tests pass arguments rather than environment variables, which every test running
+    ///      in parallel would share.
+    function deploy(uint256 pk, address owner) public returns (StrandsDACAP implementation, UpgradeableBeacon beacon) {
         vm.startBroadcast(pk);
         implementation = new StrandsDACAP();
         beacon = new UpgradeableBeacon(address(implementation), owner);
