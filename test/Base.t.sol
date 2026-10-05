@@ -16,6 +16,11 @@ import { ITransferAllowlist } from "../src/interfaces/ITransferAllowlist.sol";
 ///         MINTER_ROLE to `minter` and funds `alice` with `INITIAL_MINT`. Every suite under `test/` extends this so
 ///         the starting state is identical across files, and so every suite runs
 ///         THROUGH the proxy without saying so.
+///
+///         On a fork of Ethereum Sepolia (`forge test --fork-url sepolia`) the implementation and beacon are NOT
+///         deployed: the fixture takes the ones already deployed there (`SEPOLIA_BEACON`, recorded in DEPLOYMENTS.md),
+///         and every token is a proxy of that beacon. So the same suites, unchanged, run against the code that is on
+///         Sepolia rather than a fresh build of `src/`.
 /// @dev    The transfer allowlist starts EMPTY and `setUp` opens nothing. That
 ///         is what makes the mint and burn suites double as the proof that
 ///         issuance and redemption are exempt: they run start to finish against
@@ -29,8 +34,14 @@ abstract contract BaseTest is Test {
     StrandsDACAP internal implementation;
     UpgradeableBeacon internal beacon;
 
-    /// @dev Owns the beacon and nothing else: no role on any token. The one address that can upgrade.
+    /// @dev Owns the beacon and nothing else: no role on any token. The one address that can upgrade. On a Sepolia fork,
+    ///      whoever owns the deployed beacon there.
     address internal beaconOwner = makeAddr("beaconOwner");
+
+    uint256 internal constant SEPOLIA = 11_155_111;
+
+    /// @dev The beacon deployed on Ethereum Sepolia; see DEPLOYMENTS.md.
+    address internal constant SEPOLIA_BEACON = 0x47A6aDF49f9D2dF03d1b8e2319A79A0dD47E8Df7;
 
     address internal admin = makeAddr("admin");
     address internal minter = makeAddr("minter");
@@ -62,8 +73,14 @@ abstract contract BaseTest is Test {
     event Initialized(uint64 version);
 
     function setUp() public virtual {
-        implementation = new StrandsDACAP();
-        beacon = new UpgradeableBeacon(address(implementation), beaconOwner);
+        if (block.chainid == SEPOLIA) {
+            beacon = UpgradeableBeacon(SEPOLIA_BEACON);
+            implementation = StrandsDACAP(beacon.implementation());
+            beaconOwner = beacon.owner();
+        } else {
+            implementation = new StrandsDACAP();
+            beacon = new UpgradeableBeacon(address(implementation), beaconOwner);
+        }
 
         // Read before the first deploy, which uses them to hand MINTER_ROLE on. The implementation answers for
         // every proxy: both are constants in its code.
