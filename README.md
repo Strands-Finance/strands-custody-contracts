@@ -326,8 +326,11 @@ It is the most powerful key in the system.
 **The beacon is to be owned by Derive.** Cameron decided this on 2026-10-05,
 accepting that Derive can then replace the code of every token on the chain at
 once. Derive also receives each token's `DEFAULT_ADMIN_ROLE` during enrolment,
-so with both it needs nobody else to mint, burn or change the code. What Strands
-keeps is `MINTER_ROLE`, which Derive can revoke. An upgrade by Derive changes
+so with both it needs nobody else to mint, burn or change the code. Strands
+keeps `MINTER_ROLE` and, today, its own `DEFAULT_ADMIN_ROLE` seat: enrolment
+grants Derive the role without Strands renouncing its own. While Strands holds
+that seat, Derive revoking Strands' minter does not stick, because Strands can
+grant it back. An upgrade by Derive changes
 the code under the backend with no change on the Strands side, so an
 implementation the backend's bindings were not generated from can break or alter
 every call it makes.
