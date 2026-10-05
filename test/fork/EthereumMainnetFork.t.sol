@@ -53,7 +53,7 @@ abstract contract EthereumMainnetForkTest is Test {
 
     address internal stranger = makeAddr("stranger");
 
-    /// @dev Deploys the beacon with a Strands key, which then hands the beacon to Derive (the two-step path in
+    /// @dev Deploys the beacon with a Strands key, which owns it and then hands it to Derive (the path in
     ///      DEPLOYMENTS.md). Keyed, because both scripts sign.
     address internal strandsBeaconOwner;
     uint256 internal strandsBeaconOwnerKey;
@@ -76,7 +76,7 @@ abstract contract EthereumMainnetForkTest is Test {
 
         // The once-per-chain deploy, through the script an operator will run on mainnet.
         (strandsBeaconOwner, strandsBeaconOwnerKey) = makeAddrAndKey("strandsBeaconOwner");
-        (implementation, beacon) = new DeployBeacon().deploy(strandsBeaconOwnerKey, strandsBeaconOwner);
+        (implementation, beacon) = new DeployBeacon().deploy(strandsBeaconOwnerKey);
 
         DEFAULT_ADMIN_ROLE = implementation.DEFAULT_ADMIN_ROLE();
         MINTER_ROLE = implementation.MINTER_ROLE();

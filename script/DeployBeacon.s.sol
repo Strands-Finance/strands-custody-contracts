@@ -10,15 +10,18 @@ import { StrandsDACAP } from "../src/StrandsDACAP.sol";
 ///         configured with (`DERIVE_CUSTODY_DACAP_BEACON`) and what `Deploy.s.sol` takes as `BEACON_ADDRESS`.
 contract DeployBeacon is Script {
     function run() external returns (StrandsDACAP implementation, UpgradeableBeacon beacon) {
-        // The one address that can point the beacon at new code, and so replace the logic of EVERY token at
-        // once. Required rather than defaulted to the deployer: it is the most powerful key in the system and
-        // should be chosen, not inherited.
-        return deploy(vm.envUint("DEPLOYER_PRIVATE_KEY"), vm.envAddress("BEACON_OWNER"));
+        return deploy(vm.envUint("DEPLOYER_PRIVATE_KEY"));
     }
 
-    /// @dev Separate from `run` so tests pass arguments rather than environment variables, which every test running
-    ///      in parallel would share.
-    function deploy(uint256 pk, address owner) public returns (StrandsDACAP implementation, UpgradeableBeacon beacon) {
+    /// @dev The deploying key owns the beacon: the one address that can point it at new code, and so replace the
+    ///      logic of EVERY token at once. It keeps that power until it hands the beacon to Derive with
+    ///      `TransferBeaconOwnership.s.sol`, which is a separate, later step.
+    ///
+    ///      Separate from `run` so tests pass the key as an argument rather than an environment variable, which
+    ///      every test running in parallel would share.
+    function deploy(uint256 pk) public returns (StrandsDACAP implementation, UpgradeableBeacon beacon) {
+        address owner = vm.addr(pk);
+
         vm.startBroadcast(pk);
         implementation = new StrandsDACAP();
         beacon = new UpgradeableBeacon(address(implementation), owner);
@@ -26,6 +29,6 @@ contract DeployBeacon is Script {
 
         console2.log("StrandsDACAP implementation:", address(implementation));
         console2.log("UpgradeableBeacon:", address(beacon));
-        console2.log("Beacon owner:", owner);
+        console2.log("Beacon owner (the deploying key):", owner);
     }
 }

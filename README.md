@@ -416,9 +416,9 @@ deploying to Ethereum mainnet and after any change to `src/` or `script/`. The f
 suite deploys everything it touches, so there is no mainnet state worth pinning.
 
 It checks:
-- **Deployed.** The beacon names the implementation and the chosen owner. The implementation is locked: it can't be
-  initialized and holds no metadata or roles. Each token is a proxy of that beacon, with its metadata fixed in the
-  deploy.
+- **Deployed.** The beacon names the implementation, and the key that deployed it owns it. The implementation is
+  locked: it can't be initialized and holds no metadata or roles. Each token is a proxy of that beacon, with its
+  metadata fixed in the deploy.
 - **Initialized.** `initializeToken` ran in the deploy, seated the deployer as admin and minter and nobody else, and
   can't run again for anyone.
 - **Permissioned.**
@@ -438,11 +438,12 @@ the real addresses once Derive names them.
 
 ## Deploy
 
-**Once per chain** — the implementation and the beacon every token points at:
+**Once per chain** — the implementation and the beacon every token points at. The deploying key owns the beacon,
+and so is the one address that can upgrade every token, until it hands the beacon to Derive (see
+[Hand the beacon to Derive](#hand-the-beacon-to-derive)):
 
 ```bash
-export DEPLOYER_PRIVATE_KEY=0x...
-export BEACON_OWNER=0x...                          # required; the only address that can upgrade
+export DEPLOYER_PRIVATE_KEY=0x...                  # deploys both, and owns the beacon
 forge script script/DeployBeacon.s.sol \
   --rpc-url $RPC_URL \
   --broadcast
@@ -511,8 +512,8 @@ The script refuses before signing anything if the key is not the beacon's owner,
 or if the new owner is zero or already the owner. A beacon owned by a multisig
 cannot use it: send `transferOwnership(newOwner)` from the multisig instead.
 
-On a chain with no beacon yet, `DeployBeacon.s.sol` can instead take Derive's
-address as `BEACON_OWNER`, so no transfer is needed.
+`DeployBeacon.s.sol` always makes the deploying key the owner, so this hand-over is
+the only way a beacon reaches Derive.
 
 ## Source verification
 

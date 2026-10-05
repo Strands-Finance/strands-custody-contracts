@@ -62,8 +62,8 @@ Source is not verified on the explorer; see "Source verification" in the README.
 Not deployed, on purpose. Cameron decided on 2026-10-05 to deploy mainnet only once this stack is merged and the fork
 testing is at a state he trusts. Until then, "not deployed" is expected, not a gap to close.
 
-The beacon is to be owned by Derive: either pass Derive's address as `BEACON_OWNER` when running `DeployBeacon.s.sol`,
-or deploy with a Strands key and hand it over with `TransferBeaconOwnership.s.sol`.
+The beacon is to be owned by Derive. `DeployBeacon.s.sol` makes the deploying Strands key the owner; hand it over with
+`TransferBeaconOwnership.s.sol`.
 
 ## Ethereum mainnet (chain 1, Derive V3)
 
