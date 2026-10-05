@@ -12,8 +12,13 @@ contract Deploy is Script {
         // The chain's UpgradeableBeacon. Required: there is no sensible default for which code a token runs.
         address beacon = vm.envAddress("BEACON_ADDRESS");
         uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        // Native decimals of the custodied asset (e.g. USDC=6, BTC=8, ETH=18). Defaults to 18.
-        uint8 decimals_ = uint8(vm.envOr("DECIMALS", uint256(18)));
+        // Native decimals of the custodied asset (e.g. USDC=6, BTC=8, ETH=18). REQUIRED, and taken exactly as given:
+        // a token's decimals are permanent, and every mint is in base units of them. Both ways this used to go wrong
+        // were silent — an unset or empty variable deployed 18, and a value past 255 wrapped modulo 256 (262 deployed
+        // a 6-decimal token). Each is now refused here, before anything is broadcast.
+        uint256 rawDecimals = vm.envUint("DECIMALS");
+        require(rawDecimals <= type(uint8).max, "DECIMALS must fit in a uint8 (0-255)");
+        uint8 decimals_ = uint8(rawDecimals);
         // Both composed as "Strands.DACAP.<custodian>.<ASSET>" — custodian and asset only, no holder. The symbol
         // is the same string as the name rather than a short form: these labels identify a custodial claim, not a
         // tradeable ticker, and one unambiguous string beats a terse one nothing resolves back to.

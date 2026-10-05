@@ -265,6 +265,8 @@ export BEACON_ADDRESS=0xBeacon DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"
 # No --verify. Source publication is deliberately not performed — see "Source verification" below.
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
+export TOKEN=0x...   # the "StrandsDACAP (BeaconProxy) deployed at" address the script printed
+# MINTER_PK / ADMIN_PK below are the minter's and admin's keys: both $DEPLOYER_PRIVATE_KEY unless step 2 moved a role.
 
 # 2. Optional: move a role off the deployer key — grant it on, then renounce your own.
 #    Run from the DEPLOYER key. Skip it to keep one key as admin and minter (the backend's shape).
@@ -275,8 +277,12 @@ cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak MINTER_ROLE) $MINTER
 cast send $TOKEN "renounceRole(bytes32,address)" $(cast keccak MINTER_ROLE) $DEPLOYER \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
 
+# Every amount below is in BASE UNITS of the token's decimals. Convert with `cast parse-units`:
+# `$(cast parse-units 1000 $DECIMALS)` is 1,000 tokens. `1000ether` is 10^21 base units — on a
+# 6-decimal token that is 10^15 tokens, not 1,000.
+#
 # 3. Issue straight to the holder
-cast send $TOKEN "mint(address,uint256)" $HOLDER 1000ether \
+cast send $TOKEN "mint(address,uint256)" $HOLDER $(cast parse-units 1000 $DECIMALS) \
   --rpc-url $RPC_URL --private-key $MINTER_PK
 
 # 4. Open the destination. Until this lands, step 5 reverts with
@@ -285,16 +291,17 @@ cast send $TOKEN "setDestinationAllowed(address,bool)" $DEST true \
   --rpc-url $RPC_URL --private-key $ADMIN_PK
 
 # 5. Now the holder can move their balance
-cast send $TOKEN "transfer(address,uint256)" $DEST 100ether \
+cast send $TOKEN "transfer(address,uint256)" $DEST $(cast parse-units 100 $DECIMALS) \
   --rpc-url $RPC_URL --private-key $HOLDER_PK
 
-# 6. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Prefer
-#    guardBurn, which refuses the burn unless the chain's supply still matches the
-#    reading the amount was decided against; adminBurn is the unguarded fallback.
-cast send $TOKEN "guardBurn(address,uint256,uint256)" $HOLDER 100ether $SUPPLY_YOU_READ \
+# 6. Redeem — MINTER_ROLE only; the holder cannot burn their own balance. Use guardBurn,
+#    which refuses the burn unless the chain's supply still matches the reading the amount
+#    was decided against ($SUPPLY_YOU_READ is `totalSupply()`, in base units).
+cast send $TOKEN "guardBurn(address,uint256,uint256)" $HOLDER $(cast parse-units 100 $DECIMALS) $SUPPLY_YOU_READ \
   --rpc-url $RPC_URL --private-key $MINTER_PK
-cast send $TOKEN "adminBurn(address,uint256)" $HOLDER 100ether \
-  --rpc-url $RPC_URL --private-key $MINTER_PK
+#    ...OR, INSTEAD of guardBurn (never both — that burns twice), the unguarded fallback:
+# cast send $TOKEN "adminBurn(address,uint256)" $HOLDER $(cast parse-units 100 $DECIMALS) \
+#   --rpc-url $RPC_URL --private-key $MINTER_PK
 ```
 
 ## Security
@@ -404,7 +411,7 @@ backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`.
 ```bash
 export BEACON_ADDRESS=0x...                        # from DeployBeacon above
 export DEPLOYER_PRIVATE_KEY=0x...                  # becomes the token's admin AND minter
-export DECIMALS=6                                  # optional, defaults to 18
+export DECIMALS=6                                  # REQUIRED: the asset's native decimals (USDC 6, BTC 8, ETH 18)
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC"       # optional, defaults to "Strands.DACAP"
 export TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"     # optional, defaults to "Strands.DACAP"
 forge script script/Deploy.s.sol \
