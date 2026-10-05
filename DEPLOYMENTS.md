@@ -7,10 +7,14 @@ user, custodian and asset, and records in its own database.
 When the beacon is pointed at a new implementation or handed to a new owner, add a row to that chain's history
 instead of overwriting.
 
+**Derive V2 and V3 are on different chains.** Derive V2 runs on Derive Chain, an OP-stack L2: testnet is chain 901 and
+mainnet is chain 957. Derive V3 settles on Ethereum mainnet, chain 1. Each section below names the version it belongs
+to.
+
 The beacon on every chain is to be owned by Derive (decided by Cameron on 2026-10-05). Hand it over with
 `script/TransferBeaconOwnership.s.sol`; see "Hand the beacon to Derive" in the README.
 
-## Derive testnet (chain 901)
+## Derive Chain testnet (chain 901, Derive V2)
 
 | | Address |
 |---|---|
@@ -53,7 +57,18 @@ Verified after deploy:
 
 Source is not verified on the explorer; see "Source verification" in the README.
 
-## Derive mainnet (chain 957)
+## Derive Chain mainnet (chain 957, Derive V2)
 
-Not deployed. The beacon is to be owned by Derive: either pass Derive's address as `BEACON_OWNER` when running
-`DeployBeacon.s.sol`, or deploy with a Strands key and hand it over with `TransferBeaconOwnership.s.sol`.
+Not deployed, on purpose. Cameron decided on 2026-10-05 to deploy mainnet only once this stack is merged and the fork
+testing is at a state he trusts. Until then, "not deployed" is expected, not a gap to close.
+
+The beacon is to be owned by Derive: either pass Derive's address as `BEACON_OWNER` when running `DeployBeacon.s.sol`,
+or deploy with a Strands key and hand it over with `TransferBeaconOwnership.s.sol`.
+
+## Ethereum mainnet (chain 1, Derive V3)
+
+Not deployed, on purpose: the same 2026-10-05 hold applies. The same choice of owner applies as on Derive Chain mainnet.
+
+Before deploying here, run the fork suite in `test/fork/`. On a fork of Ethereum mainnet it runs `DeployBeacon.s.sol`,
+deploys a token, hands the token's admin role and the beacon to Derive, and checks that everything comes out correctly
+deployed, initialized and permissioned. See "Fork test" in the README.
