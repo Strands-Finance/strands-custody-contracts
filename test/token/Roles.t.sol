@@ -56,7 +56,8 @@ contract RolesTest is BaseTest {
 
     /// @dev DEFAULT_ADMIN_ROLE being its own admin is what makes the last-admin
     ///      loss in `AdminLifecycle.t.sol` unrecoverable — there is no outer
-    ///      role to bootstrap from.
+    ///      role on the token to bootstrap from. (The beacon's owner is outside
+    ///      the token; see `AdminLifecycle.t.sol`'s notes.)
     function test_DefaultAdminRole_IsItsOwnAdmin() public view {
         assertEq(token.getRoleAdmin(DEFAULT_ADMIN_ROLE), DEFAULT_ADMIN_ROLE);
     }
