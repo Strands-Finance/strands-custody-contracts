@@ -417,8 +417,8 @@ It checks:
 - **Deployed.** The beacon names the implementation and the chosen owner. The implementation is locked: it can't be
   initialized and holds no metadata or roles. Each token is a proxy of that beacon, with its metadata fixed in the
   deploy.
-- **Initialized.** `initializeToken` ran in the deploy and can't run again. `initialize` belongs to the deployer
-  alone, seats exactly the roles it names, and runs once.
+- **Initialized.** `initializeToken` ran in the deploy, seated the deployer as admin and minter and nobody else, and
+  can't run again for anyone.
 - **Permissioned.**
   - Only the minter changes supply.
   - Only the admin opens destinations and grants roles.

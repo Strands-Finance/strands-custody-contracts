@@ -44,8 +44,8 @@ abstract contract EthereumMainnetForkTest is Test {
     ///      IT once Derive names it.
     address internal constant DERIVE_ADMIN = address(uint160(uint256(keccak256("strands.fork.stand-in.DeriveAdmin"))));
 
-    /// @dev The Strands key that deploys each token. In production that one key is also the token's admin and its
-    ///      minter: `initialize(mintAuthority, mintAuthority)`.
+    /// @dev The Strands key that deploys each token. The deploy seats that one key as the token's admin and its minter,
+    ///      which is also the production arrangement.
     address internal mintAuthority = makeAddr("mintAuthority");
 
     /// @dev A user's wallet, where their tokens are minted.
@@ -82,11 +82,12 @@ abstract contract EthereumMainnetForkTest is Test {
         MINTER_ROLE = implementation.MINTER_ROLE();
     }
 
-    // ---------- deploy and initialize ----------
+    // ---------- deploy ----------
 
-    /// @dev One token: a `BeaconProxy` whose constructor runs `initializeToken`, deployed by the mint authority. Built
-    ///      from `abi/BeaconProxy.json`, the proxy bytecode this repo exports for per-token deploys, so the artifact
-    ///      itself is what gets proven. Name and symbol are the same string, as the README requires.
+    /// @dev One token: a `BeaconProxy` whose constructor runs `initializeToken`, deployed by the mint authority, which
+    ///      comes out as its admin and minter. There is nothing more to initialize. Built from `abi/BeaconProxy.json`,
+    ///      the proxy bytecode this repo exports for per-token deploys, so the artifact itself is what gets proven. Name
+    ///      and symbol are the same string, as the README requires.
     function _deployToken(uint8 decimals_, string memory name_) internal returns (StrandsDACAP token) {
         bytes memory init = abi.encodeCall(StrandsDACAP.initializeToken, (decimals_, name_, name_));
         bytes memory initCode = bytes.concat(
@@ -100,12 +101,6 @@ abstract contract EthereumMainnetForkTest is Test {
         }
         require(deployed != address(0), "the proxy deploy reverted");
         token = StrandsDACAP(deployed);
-    }
-
-    /// @dev Seats the roles in the production shape: one Strands key is both admin and minter.
-    function _initialize(StrandsDACAP token) internal {
-        vm.prank(mintAuthority);
-        token.initialize(mintAuthority, mintAuthority);
     }
 
     // ---------- storage reads ----------

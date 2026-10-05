@@ -32,19 +32,16 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
         vm.prank(stranger);
         implementation.initializeToken(USDC_DECIMALS, USDC_NAME, USDC_NAME);
 
-        _expectMissingRole(stranger, DEFAULT_ADMIN_ROLE);
-        vm.prank(stranger);
-        implementation.initialize(stranger, stranger);
-
         assertEq(implementation.name(), "", "the implementation holds no metadata");
         assertFalse(
             implementation.hasRole(DEFAULT_ADMIN_ROLE, strandsBeaconOwner), "and no admin, not even its deployer"
         );
+        assertFalse(implementation.hasRole(MINTER_ROLE, strandsBeaconOwner), "and no minter");
     }
 
     /// @dev One token as deployed: a proxy of the chain's beacon, its metadata fixed, and its deployer the only role
-    ///      holder. It is inert until `initialize`.
-    function test_DeployToken_FixesTheMetadata_AndSeatsOnlyTheDeployerAsAdmin() public {
+    ///      holder, as both admin and minter. It is live from the deploy, with nothing left to initialize.
+    function test_DeployToken_FixesTheMetadata_AndSeatsOnlyTheDeployerAsAdminAndMinter() public {
         StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
 
         assertEq(_beaconOf(address(token)), address(beacon), "the token follows the chain's beacon");
@@ -53,58 +50,43 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
         assertEq(token.decimals(), USDC_DECIMALS);
         assertEq(token.totalSupply(), 0);
         assertEq(_initializedVersion(address(token)), 1, "initializeToken ran inside the deploy");
-        assertFalse(token.initialized());
         assertEq(implementation.name(), "", "the token's state lives in the proxy, not the implementation");
 
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, mintAuthority), "the deployer is admin");
-        assertFalse(token.hasRole(MINTER_ROLE, mintAuthority), "nobody can mint yet");
+        assertTrue(token.hasRole(MINTER_ROLE, mintAuthority), "and minter");
         address[4] memory others = [holder, stranger, DERIVE_ADMIN, strandsBeaconOwner];
         for (uint256 i = 0; i < others.length; i++) {
             assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, others[i]));
             assertFalse(token.hasRole(MINTER_ROLE, others[i]));
         }
 
-        // The metadata and the deployer's admin seat are set once. Nobody can re-run initializeToken, the deployer
-        // included.
-        address[2] memory callers = [mintAuthority, stranger];
+        // Live from the deploy: the deployer mints with no second transaction.
+        vm.prank(mintAuthority);
+        token.guardMint(holder, 1, 0);
+        assertEq(token.balanceOf(holder), 1);
+    }
+
+    // ---------- initialized once ----------
+
+    /// @dev The deploy is the one initialization. Nobody can run `initializeToken` again — not the deployer, a
+    ///      holder, Derive or a stranger — so nobody can rename the token or seat themselves through it.
+    function test_InitializeToken_CannotBeReplayedByAnyone() public {
+        StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
+
+        address[4] memory callers = [mintAuthority, holder, DERIVE_ADMIN, stranger];
         for (uint256 i = 0; i < callers.length; i++) {
             _expectAlreadyInitialized();
             vm.prank(callers[i]);
             token.initializeToken(18, "Strands.DACAP.Other", "Strands.DACAP.Other");
         }
-        assertEq(token.name(), USDC_NAME);
 
-        _expectMissingRole(mintAuthority, MINTER_ROLE);
-        vm.prank(mintAuthority);
-        token.mint(holder, 1);
-    }
-
-    // ---------- initialized ----------
-
-    /// @dev `initialize` belongs to the deployer alone, seats exactly the roles it is given, and runs once.
-    function test_Initialize_IsTheDeployersAlone_SeatsTheNamedRoles_AndRunsOnce() public {
-        StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
-
-        // Nobody else can seat themselves between the deploy and `initialize`.
-        address[3] memory others = [stranger, holder, DERIVE_ADMIN];
-        for (uint256 i = 0; i < others.length; i++) {
-            _expectMissingRole(others[i], DEFAULT_ADMIN_ROLE);
-            vm.prank(others[i]);
-            token.initialize(others[i], others[i]);
+        assertEq(token.name(), USDC_NAME, "a refused replay renames nothing");
+        assertEq(token.decimals(), USDC_DECIMALS, "nor changes decimals");
+        assertEq(_initializedVersion(address(token)), 1, "nor moves the version");
+        for (uint256 i = 1; i < callers.length; i++) {
+            assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, callers[i]), "and seats no admin");
+            assertFalse(token.hasRole(MINTER_ROLE, callers[i]), "and no minter");
         }
-
-        _initialize(token);
-        assertTrue(token.initialized());
-        assertEq(_initializedVersion(address(token)), 2);
-        assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, mintAuthority));
-        assertTrue(token.hasRole(MINTER_ROLE, mintAuthority));
-
-        // Once only, even for the admin: it cannot re-seat a different minter under the same call.
-        _expectAlreadyInitialized();
-        vm.prank(mintAuthority);
-        token.initialize(stranger, stranger);
-        assertFalse(token.hasRole(MINTER_ROLE, stranger));
-        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, stranger));
     }
 
     // ---------- permissioned ----------
@@ -113,7 +95,6 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
     ///      roles, and a holder can send only where the admin has opened.
     function test_Permissions_OnlyTheMinterMovesSupply_OnlyTheAdminOpensDestinationsAndGrantsRoles() public {
         StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
-        _initialize(token);
 
         vm.prank(mintAuthority);
         token.mint(holder, 1_000 * USDC);
@@ -165,7 +146,6 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
     ///      and the allowlist, but not supply and not the code.
     function test_GrantingDeriveAdmin_GivesTheRoleGraphAndAllowlist_NotSupplyNorUpgrades() public {
         StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
-        _initialize(token);
 
         vm.prank(mintAuthority);
         token.grantRole(DEFAULT_ADMIN_ROLE, DERIVE_ADMIN);
@@ -193,7 +173,6 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
     ///      power to Derive, and an upgrade then keeps every token's address, state and roles.
     function test_Beacon_OnlyItsOwnerUpgrades_AndTheHandOverScriptMovesThatToDerive() public {
         StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
-        _initialize(token);
         vm.prank(mintAuthority);
         token.mint(holder, 1_000 * USDC);
         address v2 = address(new StrandsDACAPV2());
@@ -222,7 +201,7 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
         assertEq(token.name(), USDC_NAME);
         assertEq(token.decimals(), USDC_DECIMALS);
         assertEq(token.balanceOf(holder), 1_000 * USDC);
-        assertTrue(token.initialized());
+        assertEq(_initializedVersion(address(token)), 1, "the upgrade ran no initializer");
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, mintAuthority));
         assertTrue(token.hasRole(MINTER_ROLE, mintAuthority));
 
@@ -236,9 +215,8 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
     /// @dev Everything above in production order on one token, ending in the arrangement mainnet is meant to have:
     ///      Derive owns the beacon and is admin on the token, while Strands keeps its admin seat and is the minter.
     function test_EndToEnd_DeployedInitializedAndPermissionedOnEthereumMainnet() public {
-        // Once per chain: setUp ran DeployBeacon. Per token: deploy, seat the roles, open the destinations.
+        // Once per chain: setUp ran DeployBeacon. Per token: deploy (which seats the roles), open the destinations.
         StrandsDACAP token = _deployToken(USDC_DECIMALS, USDC_NAME);
-        _initialize(token);
         vm.startPrank(mintAuthority);
         token.setDestinationAllowed(V3_ESCROW, true);
         token.setDestinationAllowed(holder, true);
