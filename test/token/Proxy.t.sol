@@ -16,19 +16,15 @@ contract ProxyTest is BaseTest {
         _expectAlreadyInitialized();
         implementation.initializeToken(18, NAME, SYMBOL);
 
-        // Nobody holds a role on the implementation, so `initialize` is refused at its role check.
-        _expectNotAdmin(address(this));
-        implementation.initialize(admin, minter);
-
         assertEq(implementation.name(), "", "the implementation holds no metadata");
         assertFalse(implementation.hasRole(DEFAULT_ADMIN_ROLE, address(this)), "and no admin");
+        assertFalse(implementation.hasRole(MINTER_ROLE, address(this)), "and no minter");
     }
 
     /// @dev One implementation, one beacon, two tokens — and nothing shared between them. Decimals is the
     ///      sharp one: as an immutable it would have read the same on every proxy.
     function test_ProxiesOffOneBeacon_KeepSeparateState() public {
         StrandsDACAP usdc = _deploy(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
-        usdc.initialize(admin, minter);
 
         assertEq(usdc.decimals(), 6);
         assertEq(token.decimals(), 18);
@@ -50,7 +46,6 @@ contract ProxyTest is BaseTest {
     ///      entry still in place — no burn, no re-mint, nothing for a holder or an integration to do.
     function test_BeaconUpgrade_KeepsStateAndAddress() public {
         StrandsDACAP other = _deploy(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
-        other.initialize(admin, minter);
         _allow(bob);
 
         address v2 = address(new StrandsDACAPV2());
@@ -66,7 +61,6 @@ contract ProxyTest is BaseTest {
         assertEq(token.name(), NAME);
         assertEq(token.decimals(), 18);
         assertEq(other.decimals(), 6);
-        assertTrue(token.initialized());
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertTrue(token.hasRole(MINTER_ROLE, minter));
         assertTrue(token.allowedDestination(bob));

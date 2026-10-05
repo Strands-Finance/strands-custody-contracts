@@ -78,8 +78,9 @@ contract SupplyInvariantTest is BaseTest {
     ///      A holder acquiring DEFAULT_ADMIN_ROLE is checked separately, because
     ///      it is one grant away from MINTER_ROLE and the fuzzer may never land
     ///      that second call. It matters since `initializeToken` became an
-    ///      external function that grants DEFAULT_ADMIN_ROLE to its caller; the
-    ///      constructor it replaced was not reachable after deploy at all.
+    ///      external function that grants DEFAULT_ADMIN_ROLE and MINTER_ROLE to
+    ///      its caller; the constructor it replaced was not reachable after
+    ///      deploy at all.
     function invariant_TheRoleGraphIsUnreachableWithoutTheAdmin() public view {
         assertTrue(token.hasRole(MINTER_ROLE, minter), "the seated minter was unseated by a stranger");
         assertTrue(token.hasRole(DEFAULT_ADMIN_ROLE, admin), "the seated admin was unseated by a stranger");
