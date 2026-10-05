@@ -86,8 +86,8 @@ contract StrandsDACAP is ERC20BurnableUpgradeable, AccessControlUpgradeable, ITr
         _disableInitializers();
     }
 
-    /// @notice Fix the token's metadata and seat the deployer as admin. What the constructor did before this
-    ///         token sat behind a proxy, and called the same way: as part of the deploy itself.
+    /// @notice Fix the token's metadata and seat the deployer as both admin and minter. The token's only
+    ///         initializer: what a constructor would do, and called the same way, as part of the deploy itself.
     /// @param decimals_ Native decimals of the custodied asset; returned by `decimals()`.
     /// @param name_     ERC20 name. Per-deployment rather than baked in, so one token is distinguishable from the
     ///                  next on an explorer: the backend composes custodian + asset, e.g.
@@ -96,72 +96,38 @@ contract StrandsDACAP is ERC20BurnableUpgradeable, AccessControlUpgradeable, ITr
     ///                  identify a custodial claim rather than a tradeable ticker, so there is no short form
     ///                  worth having that a reader could not resolve back to the full name.
     /// @dev   MUST be passed as the proxy constructor's `data`, so it runs inside the proxy's own deploy
-    ///        transaction. There `msg.sender` is whoever deployed the proxy, exactly as it was in a constructor:
-    ///        the DEPLOYER receives DEFAULT_ADMIN_ROLE, and is therefore the only address that can call
-    ///        {initialize}. That is what closes the front-running window between the deploy landing and the
-    ///        operator's second transaction, in which anyone could otherwise seat themselves as the token's
-    ///        minter — which is the whole of its mint AND burn authority.
+    ///        transaction. There `msg.sender` is whoever deployed the proxy, exactly as it was in a constructor,
+    ///        and that address receives DEFAULT_ADMIN_ROLE and MINTER_ROLE. The token is live from the deploy:
+    ///        there is no second transaction, so there is no window in which it exists without its roles for
+    ///        anyone to step into. Handing either role on afterwards is ordinary AccessControl — `grantRole`,
+    ///        then `renounceRole` — by the admin.
+    ///
+    ///        "Whoever deployed the proxy" is its IMMEDIATE creator. Deploy it directly from the key that should
+    ///        hold the roles: a factory, a CREATE2 deployer or a batching contract that creates the proxy
+    ///        receives both roles instead.
     ///
     ///        A PROXY DEPLOYED WITH EMPTY `data` HAS NO SUCH DEFENCE: the first caller of this function becomes
-    ///        its admin.
+    ///        its admin and minter.
+    ///
+    ///        `initializer` makes this version 1. An initializer added by a later implementation is therefore
+    ///        `reinitializer(2)`, and must also be `onlyRole(DEFAULT_ADMIN_ROLE)`: a beacon upgrade runs no
+    ///        initializer, and `reinitializer` alone does not check who calls it.
     function initializeToken(uint8 decimals_, string calldata name_, string calldata symbol_) external initializer {
         // Empty metadata is UNRECOVERABLE: there is no setter, so the token would be permanently anonymous and the
         // only remedy is redeploy-and-re-mint. Reverting the deploy is the cheap end of that trade.
         require(bytes(name_).length != 0, "name=0");
         require(bytes(symbol_).length != 0, "symbol=0");
 
+        // Behind a proxy the parents' constructors never run; these stand in for them, base-first in linearization
+        // order. Only `__ERC20_init` writes state (name, symbol). The other two are empty in OpenZeppelin v5.1 and
+        // called anyway, as OpenZeppelin's own Wizard does, so a later version that gives them state is covered.
         __ERC20_init(name_, symbol_);
         __ERC20Burnable_init();
         __AccessControl_init();
 
         _getDACAPStorage().decimals = decimals_;
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-    }
-
-    /// @notice Seat both roles in one call. Callable exactly once, by the deployer only.
-    /// @param admin  Receives DEFAULT_ADMIN_ROLE: the role graph, and nothing operational.
-    /// @param minter Receives MINTER_ROLE: `mint`, `guardMint`, `adminBurn`, `guardBurn`, `burn`, `burnFrom`.
-    /// @dev   Both guards are load-bearing and neither is sufficient alone: `onlyRole(DEFAULT_ADMIN_ROLE)` is
-    ///        what makes this un-front-runnable, and `reinitializer(2)` is what makes it un-repeatable. Without
-    ///        the role check a stranger seats themselves first; without the one-shot guard an admin could
-    ///        silently re-seat a different minter under a call named "initialize".
-    ///
-    ///        Version 2 because {initializeToken} took version 1 in the deploy. An initializer added by a later
-    ///        implementation therefore starts at 3.
-    ///
-    ///        The deployer's own admin role is revoked unless it IS the admin, so the role graph afterwards is
-    ///        exactly what the arguments say — no residual deployer privilege for an auditor to chase. When
-    ///        `admin == msg.sender` (the backend's shape: one mint-authority EOA is deployer, admin and
-    ///        minter) that revoke is skipped rather than performed-and-undone.
-    ///
-    ///        NOT IDEMPOTENT. A second call reverts with `InvalidInitialization()`, unlike the `grantRole`
-    ///        sends this replaces. A caller with a retry path must read {initialized} first rather than
-    ///        re-calling and interpreting the revert.
-    function initialize(address admin, address minter) external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
-        require(admin != address(0), "admin=0");
-        require(minter != address(0), "minter=0");
-
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(MINTER_ROLE, minter);
-
-        if (msg.sender != admin) _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
-    }
-
-    /// @notice Whether {initialize} has already run. False means the token is still INERT: deployed, admin seated
-    ///         on the deployer, but no operating role granted, so nothing mints and nothing burns yet.
-    /// @dev    Exists for the deployer's own retry path. {initialize} is one-shot and reverts
-    ///         `InvalidInitialization()` on a second call, so anyone who lost track of whether their second
-    ///         transaction landed — an operator, or a backend whose bookkeeping write failed after the send —
-    ///         has to ASK rather than re-send and interpret a revert. OpenZeppelin keeps
-    ///         `_getInitializedVersion()` internal, so this is the only public answer.
-    ///
-    ///         A bool rather than the version number, and it asks about {initialize} specifically: the deploy
-    ///         itself leaves the version at 1 ({initializeToken}), so "initialized" here means 2 or later.
-    ///
-    ///         True also means the roles are seated as {initialize}'s arguments named them, and — because only
-    ///         the deployer can reach {initialize} at all — that they were seated by whoever deployed it.
-    function initialized() external view returns (bool) {
-        return _getInitializedVersion() >= 2;
+        _grantRole(MINTER_ROLE, msg.sender);
     }
 
     /// @notice Decimals of this token, set at deploy time to match the custodied asset.

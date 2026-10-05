@@ -37,11 +37,11 @@ contract MetadataTest is BaseTest {
 
     function test_Constructor_RevertsOnEmptyName() public {
         vm.expectRevert(bytes("name=0"));
-        _deploy(18, "", SYMBOL);
+        _deployAs(admin, 18, "", SYMBOL);
     }
 
     function test_Constructor_RevertsOnEmptySymbol() public {
         vm.expectRevert(bytes("symbol=0"));
-        _deploy(18, NAME, "");
+        _deployAs(admin, 18, NAME, "");
     }
 }

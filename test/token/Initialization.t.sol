@@ -1,336 +1,169 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import { Vm } from "forge-std/Vm.sol";
 import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
 import { BaseTest } from "../Base.t.sol";
 
-/// @notice Deployment is two transactions — `constructor` then `initialize` — and this suite owns the gap
-///         between them. Three properties carry it:
+/// @notice A token is initialized once, inside its own deploy: the `BeaconProxy` constructor runs `initializeToken`,
+///         which fixes the metadata and seats the DEPLOYER as both DEFAULT_ADMIN_ROLE and MINTER_ROLE. There is no
+///         second transaction, so there is no window between "deployed" and "usable" for anyone to step into. Three
+///         properties carry it:
 ///
-///         1. The constructor seats the DEPLOYER as admin and grants no operating role, so the window is
-///            INERT (nothing mints, nothing burns) and RECOVERABLE (the deployer can still initialize).
-///         2. `initialize` is admin-only, which is what makes it un-front-runnable. `initializer` alone would
-///            let a stranger seat themselves as the token's minter between the two transactions — and with
-///            one operating role, that is the whole of its mint AND burn authority.
-///         3. `initialize` runs exactly once, which is what stops an admin silently re-seating a different
-///            minter under a call named "initialize".
+///         1. The deploy seats the deployer, and nobody else, in both roles. The token is live the moment the deploy
+///            returns.
+///         2. `initializeToken` cannot run again on a deployed token, for anyone. A replay that got through would hand
+///            its caller both roles, or rename the token.
+///         3. Moving a role elsewhere is the ordinary grant-then-renounce, and leaves exactly the named holders.
 ///
-/// @dev    The fixture's `token` is already initialized, so most tests here deploy their own via
-///         `_deployUninitialized()`. This test contract is the deployer of those, and therefore their admin.
+/// @dev    The fixture's `token` has already had MINTER_ROLE handed from `admin` to `minter`, so the tests about the
+///         deploy itself use `_deployAs`, which stops at the deploy.
 contract InitializationTest is BaseTest {
-    // ---------- what the constructor leaves behind ----------
+    address internal deployer = makeAddr("deployer");
 
-    /// @dev The admin goes to `msg.sender` — NOT to a constructor argument, which is the change that makes
-    ///      `initialize` safe to leave external. Asserting the deployer holds it and the eventual admin does
-    ///      not is what distinguishes this from the old four-argument constructor.
-    function test_Constructor_GrantsAdminToTheDeployerAndNothingElse() public {
-        StrandsDACAP fresh = _deployUninitialized();
+    // ---------- what the deploy leaves behind ----------
 
-        assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, address(this)), "the deployer is the bootstrap admin");
-        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, admin), "the eventual admin arrives only via initialize");
-        assertFalse(fresh.hasRole(MINTER_ROLE, address(this)), "the deployer must not arrive as a minter");
+    /// @dev Both roles go to `msg.sender` of the proxy's creation — the deployer — and to no argument.
+    function test_Deploy_SeatsTheDeployerAsAdminAndMinter() public {
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
+
+        assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, deployer), "the deployer is admin");
+        assertTrue(fresh.hasRole(MINTER_ROLE, deployer), "and minter");
+    }
+
+    /// @dev And to nobody else: not the account running the test, not the fixture's role holders, not a holder, not
+    ///      the beacon or its owner. A role that leaked to any of them would be standing privilege nobody declared.
+    function test_Deploy_SeatsNobodyElse() public {
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
+
+        address[6] memory others = [address(this), admin, minter, alice, beaconOwner, address(beacon)];
+        for (uint256 i = 0; i < others.length; i++) {
+            assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, others[i]), "no one else is admin");
+            assertFalse(fresh.hasRole(MINTER_ROLE, others[i]), "no one else is minter");
+        }
         assertEq(fresh.totalSupply(), 0, "a fresh token has no supply");
     }
 
-    /// @dev The metadata is still the constructor's business, and still immutable. Pinned here because the
-    ///      constructor lost a parameter and a mis-ordered argument list would compile.
-    function test_Constructor_StillSetsMetadata() public {
-        StrandsDACAP fresh = _deploy(6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
+    /// @dev The metadata is the deploy's business, and has no setter afterwards. Pinned here because a mis-ordered
+    ///      `initializeToken` argument list would compile.
+    function test_Deploy_SetsMetadata() public {
+        StrandsDACAP fresh = _deployAs(deployer, 6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
 
         assertEq(fresh.decimals(), 6);
         assertEq(fresh.name(), "Strands.DACAP.BitGo.USDC");
         assertEq(fresh.symbol(), "Strands.DACAP.BitGo.USDC");
     }
 
-    /// @dev The safe-failure claim, asserted rather than argued: a deploy whose second transaction never
-    ///      landed can move no supply, for anyone, through any entrypoint. Every actor is tried — including
-    ///      the deployer, who holds admin and might be assumed to inherit the operating role with it.
-    function test_UninitializedToken_IsInert() public {
-        StrandsDACAP fresh = _deployUninitialized();
+    /// @dev Exactly one initializer runs, at version 1. A second one — the old `initialize`, or anything a later
+    ///      change slips in — would show up here as a second `Initialized` event.
+    function test_Deploy_RunsExactlyOneInitializer() public {
+        vm.recordLogs();
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
 
-        address[4] memory parties = [address(this), admin, minter, alice];
-        for (uint256 i = 0; i < parties.length; i++) {
-            vm.startPrank(parties[i]);
+        uint256 count;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter == address(fresh) && logs[i].topics[0] == Initialized.selector) {
+                assertEq(abi.decode(logs[i].data, (uint64)), 1, "the one initializer is version 1");
+                count++;
+            }
+        }
+        assertEq(count, 1, "the deploy runs exactly one initializer");
+    }
 
-            _expectMissingRole(parties[i], MINTER_ROLE);
-            fresh.mint(alice, 1 ether);
+    /// @dev Live from the deploy, with no second transaction: the deployer mints, burns and opens a destination at
+    ///      once. This is the backend's shape, where one mint-authority key is deployer, admin and minter.
+    function test_Deploy_TokenIsLiveImmediately() public {
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
 
-            _expectMissingRole(parties[i], MINTER_ROLE);
-            fresh.guardMint(alice, 1 ether, 0);
+        vm.startPrank(deployer);
+        fresh.guardMint(alice, 100 ether, 0);
+        fresh.guardBurn(alice, 40 ether, 100 ether);
+        fresh.setDestinationAllowed(bob, true);
+        vm.stopPrank();
 
-            _expectMissingRole(parties[i], MINTER_ROLE);
-            fresh.guardBurn(alice, 1 ether, 0);
+        vm.prank(alice);
+        fresh.transfer(bob, 10 ether);
 
-            _expectMissingRole(parties[i], MINTER_ROLE);
-            fresh.adminBurn(alice, 1 ether);
+        assertEq(fresh.balanceOf(alice), 50 ether);
+        assertEq(fresh.balanceOf(bob), 10 ether);
+        assertEq(fresh.totalSupply(), 60 ether, "the deployer reaches every power the deploy gave it");
+    }
 
-            _expectMissingRole(parties[i], MINTER_ROLE);
-            fresh.burn(1 ether);
+    // ---------- the deploy cannot be replayed ----------
 
-            _expectMissingRole(parties[i], MINTER_ROLE);
-            fresh.burnFrom(alice, 1 ether);
+    /// @dev `initializeToken` does what a constructor would, but unlike a constructor it is an external function, and
+    ///      it grants both roles to its caller. "Only the deployer is seated" and "the metadata has no setter"
+    ///      therefore rest on its `initializer` guard rather than on the language. Tried on a fresh token and on the
+    ///      fixture's, by the deployer, the seated admin and a stranger.
+    function test_InitializeToken_CannotBeReplayedOnADeployedToken() public {
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
+        address attacker = makeAddr("attacker");
 
-            vm.stopPrank();
+        address[4] memory callers = [deployer, admin, minter, attacker];
+        for (uint256 i = 0; i < callers.length; i++) {
+            vm.prank(callers[i]);
+            _expectAlreadyInitialized();
+            fresh.initializeToken(6, "Strands.DACAP.Replayed", "Strands.DACAP.Replayed");
+
+            vm.prank(callers[i]);
+            _expectAlreadyInitialized();
+            token.initializeToken(6, "Strands.DACAP.Replayed", "Strands.DACAP.Replayed");
         }
 
-        assertEq(fresh.totalSupply(), 0, "an uninitialized token issues nothing");
+        assertEq(fresh.name(), NAME, "a refused replay renames nothing");
+        assertEq(fresh.decimals(), 18, "nor changes decimals");
+        assertEq(token.name(), NAME);
+        assertEq(token.decimals(), 18);
+        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, attacker), "and seats no admin");
+        assertFalse(fresh.hasRole(MINTER_ROLE, attacker), "and no minter");
+        assertFalse(token.hasRole(DEFAULT_ADMIN_ROLE, attacker));
+        assertFalse(token.hasRole(MINTER_ROLE, attacker));
     }
 
-    /// @dev Inert is not bricked. The deployer still holds admin, so the deploy is recoverable by finishing
-    ///      it — no redeploy, no orphaned contract.
-    function test_UninitializedToken_IsStillRecoverableByTheDeployer() public {
-        StrandsDACAP fresh = _deployUninitialized();
+    /// @dev No address is special: every caller is refused, and none is seated. The deployer is excluded only because
+    ///      it already holds both roles, which would make the closing assertions meaningless; the test above covers
+    ///      its refusal.
+    function testFuzz_InitializeToken_IsRefusedForAnyCaller(address caller) public {
+        vm.assume(caller != deployer);
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
 
-        fresh.initialize(admin, minter);
+        vm.prank(caller);
+        _expectAlreadyInitialized();
+        fresh.initializeToken(6, "Strands.DACAP.Replayed", "Strands.DACAP.Replayed");
 
-        vm.prank(minter);
-        fresh.mint(alice, 1 ether);
-        assertEq(fresh.balanceOf(alice), 1 ether, "finishing the deploy is all the recovery needed");
+        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, caller), "no caller is seated as admin by a replay");
+        assertFalse(fresh.hasRole(MINTER_ROLE, caller), "nor as minter");
     }
 
-    // ---------- what initialize seats ----------
+    // ---------- handing the roles on ----------
 
-    function test_Initialize_SeatsBothRoles() public {
-        StrandsDACAP fresh = _deployUninitialized();
+    /// @dev Moving the roles off the deploying key is ordinary AccessControl, by that key: grant to the new holders,
+    ///      then renounce its own. Afterwards the role graph is exactly the named holders, and the deployer can do
+    ///      nothing — no residual privilege for an auditor to chase.
+    function test_HandOff_GrantThenRenounce_LeavesExactlyTheNamedHolders() public {
+        StrandsDACAP fresh = _deployAs(deployer, 18, NAME, SYMBOL);
 
-        fresh.initialize(admin, minter);
+        vm.startPrank(deployer);
+        fresh.grantRole(DEFAULT_ADMIN_ROLE, admin);
+        fresh.grantRole(MINTER_ROLE, minter);
+        fresh.renounceRole(MINTER_ROLE, deployer);
+        fresh.renounceRole(DEFAULT_ADMIN_ROLE, deployer);
+        vm.stopPrank();
 
         assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertTrue(fresh.hasRole(MINTER_ROLE, minter));
-    }
-
-    /// @dev Each role goes to the address NAMED for it. Two distinct addresses, so a swapped argument pair
-    ///      fails here rather than in whichever suite happens to exercise the wrong power first — and this is
-    ///      the assertion that keeps governance and operations separable at all, since an `initialize` that
-    ///      handed both to one argument would look identical from `hasRole(DEFAULT_ADMIN_ROLE, admin)` alone.
-    function test_Initialize_DoesNotCrossWireTheRoles() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        fresh.initialize(admin, minter);
-
         assertFalse(fresh.hasRole(MINTER_ROLE, admin), "the admin is not a minter");
         assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, minter), "the operating role does not carry admin");
-    }
+        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, deployer), "the deployer's admin is spent");
+        assertFalse(fresh.hasRole(MINTER_ROLE, deployer), "and its minter");
 
-    function test_Initialize_EmitsInitialized() public {
-        StrandsDACAP fresh = _deployUninitialized();
+        vm.prank(deployer);
+        _expectNotMinter(deployer);
+        fresh.mint(alice, 1);
 
-        vm.expectEmit(false, false, false, true, address(fresh));
-        emit Initialized(2);
-
-        fresh.initialize(admin, minter);
-    }
-
-    /// @dev Hand off, do not accumulate. A deployer that kept admin would be standing privilege nobody
-    ///      declared — exactly the thing an auditor reading `initialize`'s arguments would not expect.
-    function test_Initialize_RevokesTheDeployersAdminWhenAdminIsSomeoneElse() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        fresh.initialize(admin, minter);
-
-        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, address(this)), "the deployer's bootstrap admin is spent");
-
-        _expectNotAdmin(address(this));
-        fresh.grantRole(MINTER_ROLE, carol);
-        assertFalse(fresh.hasRole(MINTER_ROLE, carol), "and the revocation is effective immediately");
-    }
-
-    /// @dev The backend's actual shape: one mint-authority EOA is deployer, admin and minter. The revoke must
-    ///      be SKIPPED there, not performed-and-undone — a token whose only admin revoked itself would have a
-    ///      frozen role graph from birth.
-    function test_Initialize_KeepsTheDeployersAdminWhenItIsTheAdmin() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        fresh.initialize(address(this), address(this));
-
-        assertTrue(fresh.hasRole(DEFAULT_ADMIN_ROLE, address(this)), "self-handoff must not strip the admin");
-        assertTrue(fresh.hasRole(MINTER_ROLE, address(this)));
-
-        fresh.grantRole(MINTER_ROLE, carol);
-        assertTrue(fresh.hasRole(MINTER_ROLE, carol), "the role graph is still live");
-    }
-
-    /// @dev The whole point, end to end: the seated role must actually WORK, in both directions. `hasRole`
-    ///      reading true proves the mapping was written, not that any entrypoint accepts the holder.
-    function test_Initialize_LeavesTheTokenMintableAndBurnableEndToEnd() public {
-        StrandsDACAP fresh = _deployUninitialized();
-        fresh.initialize(admin, minter);
-
-        vm.startPrank(minter);
-        fresh.guardMint(alice, 100 ether, 0);
-        fresh.guardBurn(alice, 40 ether, 100 ether);
-        fresh.adminBurn(alice, 10 ether);
-        vm.stopPrank();
-
-        assertEq(fresh.balanceOf(alice), 50 ether);
-        assertEq(fresh.totalSupply(), 50 ether, "the minter reaches every power initialize gave it");
-    }
-
-    // ---------- who may initialize ----------
-
-    /// @dev The front-running case, written as the scenario rather than as a bare role assertion. A CREATE
-    ///      deploy is visible the moment it lands; if `initializer` were the only guard, the first stranger to
-    ///      call would own the token's mint and burn authority outright.
-    function test_Initialize_CannotBeFrontRunByAStranger() public {
-        StrandsDACAP fresh = _deployUninitialized();
-        address attacker = makeAddr("attacker");
-
-        vm.prank(attacker);
-        _expectMissingRole(attacker, DEFAULT_ADMIN_ROLE);
-        fresh.initialize(attacker, attacker);
-
-        assertFalse(fresh.hasRole(MINTER_ROLE, attacker), "no self-seating");
-        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, attacker));
-
-        // ...and the legitimate deployer's initialize still works afterwards: a refused attempt must not
-        // consume the one shot.
-        fresh.initialize(admin, minter);
-        assertTrue(fresh.hasRole(MINTER_ROLE, minter), "a rejected attempt must not burn the initializer");
-    }
-
-    /// @dev No address is special. Every caller but the deployer is refused, at every argument shape.
-    function testFuzz_ArbitraryNonDeployer_CannotInitialize(address caller) public {
-        vm.assume(caller != address(this));
-        StrandsDACAP fresh = _deployUninitialized();
-
-        vm.prank(caller);
-        _expectMissingRole(caller, DEFAULT_ADMIN_ROLE);
-        fresh.initialize(admin, minter);
-
-        assertFalse(fresh.hasRole(MINTER_ROLE, minter), "nothing was seated");
-    }
-
-    /// @dev The recovery path for a deploy from a key that is being retired: admin can be rotated BEFORE
-    ///      initialize, and the successor inherits the right to finish the deploy.
-    function test_Initialize_MayBeCompletedByARotatedAdmin() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        fresh.grantRole(DEFAULT_ADMIN_ROLE, carol);
-        fresh.renounceRole(DEFAULT_ADMIN_ROLE, address(this));
-
-        vm.prank(carol);
-        fresh.initialize(admin, minter);
-
-        assertTrue(fresh.hasRole(MINTER_ROLE, minter), "the successor can finish what the deployer started");
-        assertFalse(fresh.hasRole(DEFAULT_ADMIN_ROLE, carol), "and hands admin on in the same call");
-    }
-
-    // ---------- exactly once ----------
-
-    function test_Initialize_RevertsOnSecondCall() public {
-        StrandsDACAP fresh = _deployUninitialized();
-        fresh.initialize(admin, minter);
-
-        vm.prank(admin);
-        _expectAlreadyInitialized();
-        fresh.initialize(admin, carol);
-
-        assertFalse(fresh.hasRole(MINTER_ROLE, carol), "a refused re-initialize seats nothing");
-        assertTrue(fresh.hasRole(MINTER_ROLE, minter), "and leaves the original wiring intact");
-    }
-
-    /// @dev The fixture's own token, re-initialized by its live admin. `onlyRole` passes here — `admin` really
-    ///      does hold DEFAULT_ADMIN_ROLE — so this is the case where `initializer` is the ONLY thing standing
-    ///      between an admin and a silent minter swap under a call named "initialize".
-    function test_Initialize_CannotBeReplayedByTheLiveAdmin() public {
-        vm.prank(admin);
-        _expectAlreadyInitialized();
-        token.initialize(admin, carol);
-
-        assertFalse(token.hasRole(MINTER_ROLE, carol));
-    }
-
-    /// @dev And it does not become available again after an admin rotation — `initializer` is a property of
-    ///      the CONTRACT, not of the caller. Kills the reading where each new admin gets a fresh shot.
-    function test_Initialize_CannotBeReplayedAfterAdminHandoff() public {
-        address newAdmin = makeAddr("newAdmin");
-
-        vm.prank(admin);
-        token.grantRole(DEFAULT_ADMIN_ROLE, newAdmin);
-
-        vm.prank(newAdmin);
-        _expectAlreadyInitialized();
-        token.initialize(newAdmin, carol);
-
-        assertFalse(token.hasRole(MINTER_ROLE, carol), "a new admin inherits no fresh initializer");
-    }
-
-    /// @dev A non-admin calling an ALREADY-initialized token is refused by the role gate, not the initializer.
-    ///      Both guards are live, and they fail for distinguishable reasons — which is what makes a revert
-    ///      readable to whoever is debugging the deploy.
-    function test_Initialize_NonAdminOnInitializedToken_FailsTheRoleGateFirst() public {
-        vm.prank(alice);
-        _expectMissingRole(alice, DEFAULT_ADMIN_ROLE);
-        token.initialize(alice, alice);
-    }
-
-    // ---------- reporting the gap ----------
-
-    /// @dev The read the whole two-transaction deploy rests on for anyone retrying it. Both sides of the gap
-    ///      in one test, because a getter stuck at either constant would pass a one-sided assertion.
-    function test_Initialized_ReportsBothSidesOfTheGap() public {
-        StrandsDACAP fresh = _deployUninitialized();
-        assertFalse(fresh.initialized(), "the constructor alone does not initialize");
-
-        fresh.initialize(admin, minter);
-        assertTrue(fresh.initialized(), "and initialize is what flips it");
-    }
-
-    /// @dev It must track the ONE SHOT, not the caller's luck: a refused attempt leaves it false (the shot is
-    ///      still available), and a refused re-entry leaves it true. This is the property a retrying deployer
-    ///      reads it for — false means "send it", true means "do not".
-    function test_Initialized_TracksTheShotRatherThanTheLastAttempt() public {
-        StrandsDACAP fresh = _deployUninitialized();
-        address attacker = makeAddr("attacker");
-
-        vm.prank(attacker);
-        _expectMissingRole(attacker, DEFAULT_ADMIN_ROLE);
-        fresh.initialize(attacker, attacker);
-        assertFalse(fresh.initialized(), "a rejected attempt must not read as initialized");
-
-        vm.expectRevert(bytes("minter=0"));
-        fresh.initialize(admin, address(0));
-        assertFalse(fresh.initialized(), "nor must a rejected argument");
-
-        fresh.initialize(admin, minter);
-
-        vm.prank(admin);
-        _expectAlreadyInitialized();
-        fresh.initialize(admin, carol);
-        assertTrue(fresh.initialized(), "and a refused re-entry does not un-initialize it");
-    }
-
-    /// @dev The fixture's token is initialized by the harness, so this pins that the getter agrees with the
-    ///      state every other suite is written against — not just with tokens this file deployed itself.
-    function test_Initialized_IsTrueForTheFixtureToken() public view {
-        assertTrue(token.initialized());
-    }
-
-    // ---------- argument validation ----------
-
-    function test_Initialize_RevertsOnZeroAdmin() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        vm.expectRevert(bytes("admin=0"));
-        fresh.initialize(address(0), minter);
-    }
-
-    function test_Initialize_RevertsOnZeroMinter() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        vm.expectRevert(bytes("minter=0"));
-        fresh.initialize(admin, address(0));
-    }
-
-    /// @dev A rejected initialize must not consume the one shot — otherwise a fat-fingered zero address
-    ///      would permanently strand a freshly deployed token.
-    function test_Initialize_RejectedForAZeroAddress_LeavesTheInitializerAvailable() public {
-        StrandsDACAP fresh = _deployUninitialized();
-
-        vm.expectRevert(bytes("minter=0"));
-        fresh.initialize(admin, address(0));
-
-        fresh.initialize(admin, minter);
-        assertTrue(fresh.hasRole(MINTER_ROLE, minter), "the retry with a corrected argument goes through");
+        vm.prank(minter);
+        fresh.mint(alice, 1);
+        assertEq(fresh.balanceOf(alice), 1, "the new minter works");
     }
 }

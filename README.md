@@ -116,32 +116,36 @@ re-mint.
 - Nothing in this repo performs an upgrade. `test/token/Proxy.t.sol` proves one
   keeps state.
 
-## Deployment is two transactions
+## Deployment is one transaction
 
 The proxy's deploy runs `initializeToken(decimals, name, symbol)` in the same
-transaction, which fixes the token's metadata and grants `DEFAULT_ADMIN_ROLE`
-to **the deployer** — what the constructor did before the token sat behind a
-proxy. Both roles are seated by a separate `initialize(admin, minter)`, which is
-`onlyRole(DEFAULT_ADMIN_ROLE)` *and* runs exactly once.
+transaction. It fixes the token's metadata and grants **the deployer** both
+`DEFAULT_ADMIN_ROLE` and `MINTER_ROLE` — what a constructor would do, had the
+token no proxy in front of it. It is the token's only initializer, and the token
+is live the moment the deploy returns: there is no second transaction, so there
+is no window between "deployed" and "usable" for anyone to step into.
+
+```
+Deployer ─▶ new BeaconProxy(beacon, initializeToken(decimals, name, symbol))
+              └─ delegatecall initializeToken      [Initializable version 0 → 1]
+                   metadata fixed · admin = Deployer · minter = Deployer
+```
 
 **Always pass `initializeToken` as the proxy constructor's `data`.** A proxy
 created with empty `data` belongs to whoever calls `initializeToken` first.
 
-Both guards are load-bearing. The role check is what makes `initialize`
-un-front-runnable — a CREATE deploy is visible the moment it lands, and with
-only a one-shot guard the first stranger to call would own the token's mint and
-burn authority. The one-shot guard is what stops an admin silently re-seating a
-different minter later under a call named "initialize".
+**Deploy straight from the key that should hold the roles.** The roles go to the
+proxy's immediate creator, so a factory, a CREATE2 deployer or a batching
+contract that creates the proxy receives both roles instead.
 
-Between the two transactions the token is **inert** (nobody holds `MINTER_ROLE`,
-so every privileged entrypoint reverts) and **recoverable** (the deployer still
-holds admin and can finish the deploy). `initialize` revokes the deployer's own
-admin unless it *is* the admin, so the role graph afterwards is exactly what the
-arguments say.
+`initializeToken` cannot run again on a deployed token, for anyone — it reverts
+`InvalidInitialization()`. Moving a role elsewhere afterwards (a cold admin, a
+minter multisig) is ordinary `AccessControl`, sent by the deployer: `grantRole`
+to the new holder, then `renounceRole` its own.
 
-`initialize` is **not idempotent** — a second call reverts with
-`InvalidInitialization()`. A caller with a retry path must read `hasRole` first
-rather than re-calling.
+An initializer added by a later implementation is `reinitializer(2)`, and must
+also be `onlyRole(DEFAULT_ADMIN_ROLE)`: a beacon upgrade runs no initializer, and
+`reinitializer` alone does not check who calls it.
 
 ## Token
 
@@ -175,12 +179,12 @@ Two roles, following OpenZeppelin's own division: `DEFAULT_ADMIN_ROLE` is
 
 | Role | Powers |
 | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and call `initialize` once. **No power over balances.** |
+| `DEFAULT_ADMIN_ROLE` | Grant / revoke any role, and open transfer destinations. **No power over balances.** |
 | `MINTER_ROLE` | Everything that moves supply: `mint`, `guardMint`, `guardBurn`, `adminBurn`, `burn`, `burnFrom` |
 
-The deploy grants `DEFAULT_ADMIN_ROLE` to the deployer; `initialize` then
-seats both roles at whichever addresses (ideally multisigs / timelocks) should
-hold them, and hands admin on.
+The deploy grants both roles to the deployer. Where they should end up elsewhere
+(ideally multisigs / timelocks), the deployer grants them on and renounces its
+own.
 
 `MINTER_ROLE` reaches every burn path as well as every mint path — the name is
 narrower than the capability. It is deliberate: `AccessControl` warns that
@@ -192,10 +196,8 @@ keeps every escalation visible as a `RoleGranted`.
 ## API
 
 ```solidity
-// Passed as the BeaconProxy constructor's data, so it runs in the deploy.  admin -> msg.sender
+// Passed as the BeaconProxy constructor's data, so it runs in the deploy.  admin, minter -> msg.sender
 function initializeToken(uint8 decimals_, string calldata name_, string calldata symbol_) external;
-
-function initialize(address admin, address minter) external; // DEFAULT_ADMIN_ROLE, once
 
 function mint(address to, uint256 amount) external;          // MINTER_ROLE
 function guardMint(address to, uint256 amount, uint256 estimatedSupply) external;   // MINTER_ROLE
@@ -257,18 +259,20 @@ image: minter-driven, and the holder cannot initiate it.
 ```bash
 # 0. Once per chain: the implementation and its beacon. See "Deploy".
 #
-# 1. Deploy + initialize — the script does both in one broadcast, because a token left
-#    uninitialized is inert and only the deployer key can finish it.
-export BEACON_ADDRESS=0xBeacon
-export ADMIN_ADDRESS=0xAdmin DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
+# 1. Deploy. One transaction: the deployer comes out as admin AND minter, so the token
+#    is live when the script returns.
+export BEACON_ADDRESS=0xBeacon DECIMALS=6 DEPLOYER_PRIVATE_KEY=0x...
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC" TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"
-export MINTER_ADDRESS=0xMinter                                 # defaults to $ADMIN_ADDRESS
 # No --verify. Source publication is deliberately not performed — see "Source verification" below.
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
 
-# 2. ...or, deploying by hand, seat the roles yourself. Run this from the DEPLOYER key —
-#    it is the only address holding DEFAULT_ADMIN_ROLE until this call hands it over.
-cast send $TOKEN "initialize(address,address)" $ADMIN $MINTER \
+# 2. Optional: move a role off the deployer key — grant it on, then renounce your own.
+#    Run from the DEPLOYER key. Skip it to keep one key as admin and minter (the backend's shape).
+DEPLOYER=$(cast wallet address --private-key $DEPLOYER_PRIVATE_KEY)
+export MINTER=0xMinter                                         # the new MINTER_ROLE holder
+cast send $TOKEN "grantRole(bytes32,address)" $(cast keccak MINTER_ROLE) $MINTER \
+  --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
+cast send $TOKEN "renounceRole(bytes32,address)" $(cast keccak MINTER_ROLE) $DEPLOYER \
   --rpc-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
 
 # 3. Issue straight to the holder
@@ -313,9 +317,9 @@ visible rather than standing. This is the reason the burn surface was NOT folded
 onto `DEFAULT_ADMIN_ROLE` when `CUSTODIAN_ROLE` was removed — doing so would
 have deleted that announcement and forced the governance key to stay hot.
 
-Between deploy and `initialize`, `DEFAULT_ADMIN_ROLE` sits on the **deployer
-key**. Keep that window short and the key controlled: it is the one address that
-can decide who the minter will be.
+The deploy seats both roles on the **deployer key**, with no window in between
+for anyone else to claim them. Until it hands a role on, that key alone is the
+token's governance and its operations, so it must be controlled accordingly.
 
 **The beacon's owner sits above all of this.** It can point every token at new
 code, and new code can do anything: mint without `MINTER_ROLE`, ignore the
@@ -364,9 +368,9 @@ In production:
 - Monitor `Burned`. All four paths that destroy supply emit it, so it is the
   complete record of redemption, and `burnedBy` always names a `MINTER_ROLE`
   holder.
-- **Initialize in the same operation as the deploy.** An uninitialized token is
-  harmless but unfinished, and the only key that can complete it is the one that
-  deployed it.
+- **Deploy from the key that should hold the roles, directly.** The deploy
+  seats its immediate creator; deploying through a factory or a CREATE2 deployer
+  would hand that contract both roles.
 
 ## Build & test
 
@@ -399,12 +403,10 @@ backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`.
 
 ```bash
 export BEACON_ADDRESS=0x...                        # from DeployBeacon above
-export ADMIN_ADDRESS=0x...
-export DEPLOYER_PRIVATE_KEY=0x...
+export DEPLOYER_PRIVATE_KEY=0x...                  # becomes the token's admin AND minter
 export DECIMALS=6                                  # optional, defaults to 18
 export TOKEN_NAME="Strands.DACAP.BitGo.USDC"       # optional, defaults to "Strands.DACAP"
 export TOKEN_SYMBOL="Strands.DACAP.BitGo.USDC"     # optional, defaults to "Strands.DACAP"
-export MINTER_ADDRESS=0x...                        # optional, defaults to $ADMIN_ADDRESS
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --broadcast
@@ -418,9 +420,10 @@ want of an environment variable. But the label is permanent, and taking the defa
 gives you a token indistinguishable from every other one on an explorer, which is
 the whole thing these arguments exist to fix.
 
-The script deploys and initializes in one broadcast, so the token is live when
-it returns. Deploying by hand instead means the deployer key must follow up with
-`initialize(admin, minter)` — until it does, the token is inert.
+The deploy is the whole of initialization, so the token is live when the script
+returns, with the deployer key as both admin and minter. Moving either role
+elsewhere is a later `grantRole` then `renounceRole` from that key (see
+[Operating the token](#operating-the-token)).
 
 ### Hand the beacon to Derive
 

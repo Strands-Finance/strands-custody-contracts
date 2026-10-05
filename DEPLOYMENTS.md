@@ -37,6 +37,11 @@ Implementation history:
 call `upgradeTo` with it, and add a row above. Once the beacon is Derive's, only Derive can send that `upgradeTo`.
 `abi/` and the backend's bindings must move with it.
 
+**The current implementation is out of date.** It is the two-initializer version, where a token's roles were seated by
+a separate `initialize(admin, minter)`. The single-initializer change (`initializeToken` seats the deployer as admin and
+minter; `initialize` and `initialized()` removed) needs a new implementation here and an `upgradeTo` from the beacon
+owner before any backend deploys a token against this beacon.
+
 Verified after deploy:
 - Both contracts' runtime code equals a clean `forge build` (`forge inspect … deployedBytecode`).
 - `implementation()` and `owner()` read back as above.
