@@ -391,6 +391,49 @@ forge build
 forge test -vvv
 ```
 
+### Fork test (Ethereum mainnet, Derive V3)
+
+`test/fork/` deploys the contracts on a fork of Ethereum mainnet the way they will be deployed there, and checks that
+they come out correctly deployed, initialized and permissioned. The beacon goes through `script/DeployBeacon.s.sol`,
+each token is deployed from `abi/BeaconProxy.json`, and the hand-over runs through
+`script/TransferBeaconOwnership.s.sol`. It tests the contracts only; how the backend drives them belongs to the
+backend's own tests.
+
+Use the Ethereum mainnet Alchemy URL the backend already uses. The backend builds it in
+`Common/Common.Nethereum/Services/Singletons/AlchemyUrlProvider.cs`: prefix `eth-mainnet`, and the `AlchemyApp.Misc`
+key from the `Development`/`Local` block. **This repo is public, so never commit that key, here or anywhere else in
+it**; pass it through the environment:
+
+```bash
+export ALCHEMY_KEY=...   # AlchemyApp.Misc, Development/Local, from the backend's AlchemyUrlProvider.cs
+ETH_MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_KEY forge test --match-path 'test/fork/*' -vvv
+```
+
+It's opt-in and runs locally: without `ETH_MAINNET_RPC_URL` the suite skips, and CI never sets it. Run it before
+deploying to Ethereum mainnet and after any change to `src/` or `script/`. The fork is taken at the latest block: the
+suite deploys everything it touches, so there is no mainnet state worth pinning.
+
+It checks:
+- **Deployed.** The beacon names the implementation and the chosen owner. The implementation is locked: it can't be
+  initialized and holds no metadata or roles. Each token is a proxy of that beacon, with its metadata fixed in the
+  deploy.
+- **Initialized.** `initializeToken` ran in the deploy, seated the deployer as admin and minter and nobody else, and
+  can't run again for anyone.
+- **Permissioned.**
+  - Only the minter changes supply.
+  - Only the admin opens destinations and grants roles.
+  - Transfers are default-deny.
+  - Granting Derive `DEFAULT_ADMIN_ROLE` gives it the role graph and the allowlist, but not supply and not the code.
+  - Only the beacon's owner can upgrade, and the hand-over script moves that power to Derive.
+  - An upgrade keeps every token's address, state and roles.
+- **End to end.** All of the above in production order, ending in the arrangement mainnet is meant to have: Derive
+  owns the beacon and is admin on the token, while Strands keeps its admin seat and is the minter.
+
+**Derive V2 and V3 are on different chains.** Derive V2 runs on Derive Chain, an OP-stack L2: mainnet is chain 957
+and testnet is chain 901. Derive V3 settles on Ethereum mainnet, chain 1, and this suite forks that. Derive has
+published no V3 L1 addresses, so Derive's admin and V3's escrow are stand-ins (`DERIVE_ADMIN`, `V3_ESCROW`). Swap in
+the real addresses once Derive names them.
+
 ## Deploy
 
 **Once per chain** — the implementation and the beacon every token points at:
