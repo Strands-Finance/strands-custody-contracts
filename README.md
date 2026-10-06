@@ -436,6 +436,26 @@ and testnet is chain 901. Derive V3 settles on Ethereum mainnet, chain 1, and th
 published no V3 L1 addresses, so Derive's admin and V3's escrow are stand-ins (`DERIVE_ADMIN`, `V3_ESCROW`). Swap in
 the real addresses once Derive names them.
 
+### Every suite on a fork of Sepolia
+
+The same suites, unchanged, can run against the contracts deployed on Ethereum Sepolia instead of a fresh build of
+`src/`:
+
+```bash
+FOUNDRY_PROFILE=sepolia forge test      # ALCHEMY_KEY from the environment or .env
+```
+
+On a fork of Sepolia, `test/Base.t.sol` doesn't deploy an implementation and beacon. It takes the beacon recorded in
+[`DEPLOYMENTS.md`](./DEPLOYMENTS.md) (`SEPOLIA_BEACON`) and its implementation and owner, and every token the suites
+deploy is a proxy of that beacon. `test/SepoliaFork.t.sol` proves the run is really on the deployed contracts: the
+fixture's beacon is Sepolia's, its token follows it, and the implementation's code is `abi/StrandsDACAP.json`'s. On any
+other chain it skips.
+
+The `sepolia` profile in `foundry.toml` pins the fork just after the beacon's deploy, so forge caches every RPC answer
+on disk. It also fixes the fuzz seed so reruns hit that cache, and throttles the endpoint, because each fuzzed caller is
+a fresh address that costs RPC calls and Alchemy answers 429 to an unthrottled run. Move `fork_block_number` forward
+when the beacon is upgraded. Like the mainnet suite, it's opt-in and local; CI never forks.
+
 ## Deploy
 
 **Once per chain** — the implementation and the beacon every token points at. The deploying key owns the beacon,

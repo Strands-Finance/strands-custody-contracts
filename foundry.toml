@@ -23,6 +23,22 @@ fuzz = { runs = 256 }
 invariant = { runs = 256, depth = 64, fail_on_revert = false }
 gas_reports = ["StrandsDACAP"]
 
+# `FOUNDRY_PROFILE=sepolia forge test` runs every suite on a fork of Ethereum Sepolia, against the beacon deployed there
+# (see `test/Base.t.sol`). Everything else is inherited from the default profile, so the code compiles the same.
+[profile.sepolia]
+eth_rpc_url = "sepolia"
+# Pinned just after the beacon's deploy (block 11852068, DEPLOYMENTS.md) so forge caches every RPC answer on disk and a
+# rerun is fast and identical. Move it forward when the beacon is upgraded.
+fork_block_number = 11852100
+# A fixed seed fuzzes the same addresses every run, so they come from the cache. CI keeps fuzzing with fresh seeds.
+fuzz = { runs = 256, seed = "0x5e9011a" }
+
+# The same URL `script/Networks.sol` builds. The key comes from the environment or .env, never this file: this repo is
+# public. Throttled and retried because a fork test's fuzzed callers are fresh addresses, each one costing RPC calls;
+# unthrottled, Alchemy answers 429.
+[rpc_endpoints]
+sepolia = { endpoint = "https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}", compute_units_per_second = 100, retries = 10, retry_backoff = 2000 }
+
 [lint]
 # OZ ERC20 reverts on failure instead of returning false, so unchecked
 # transfer/transferFrom calls in tests are intentional.
