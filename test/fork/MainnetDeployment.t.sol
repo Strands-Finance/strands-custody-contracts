@@ -21,9 +21,9 @@ contract MainnetDeploymentTest is EthereumMainnetForkTest {
 
     // ---------- deployed ----------
 
-    /// @dev The once-per-chain deploy: a beacon that names the implementation and is owned by whoever was chosen, in
-    ///      front of an implementation that is code only and can never be made into a token.
-    function test_DeployBeacon_NamesALockedImplementation_AndTheChosenOwner() public {
+    /// @dev The once-per-chain deploy: a beacon that names the implementation and is owned by the key that deployed it,
+    ///      in front of an implementation that is code only and can never be made into a token.
+    function test_DeployBeacon_NamesALockedImplementation_AndIsOwnedByTheDeployingKey() public {
         assertEq(beacon.implementation(), address(implementation));
         assertEq(beacon.owner(), strandsBeaconOwner);
         assertEq(_initializedVersion(address(implementation)), type(uint64).max, "the implementation is locked");

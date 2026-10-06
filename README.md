@@ -112,7 +112,9 @@ re-mint.
   can never be made to look like a token.
 - **A new implementation may only append to `DACAPStorage`.** The token's own
   state lives in one ERC-7201 namespaced struct; reordering or removing a field
-  silently reinterprets every token's storage, and `forge` will not catch it.
+  silently reinterprets every token's storage, and neither the compiler nor the
+  beacon's `upgradeTo` checks it. `test/token/StorageLayout.t.sol` pins where
+  every field lives, and a new implementation must keep it passing.
 - Nothing in this repo performs an upgrade. `test/token/Proxy.t.sol` proves one
   keeps state.
 
@@ -414,9 +416,9 @@ deploying to Ethereum mainnet and after any change to `src/` or `script/`. The f
 suite deploys everything it touches, so there is no mainnet state worth pinning.
 
 It checks:
-- **Deployed.** The beacon names the implementation and the chosen owner. The implementation is locked: it can't be
-  initialized and holds no metadata or roles. Each token is a proxy of that beacon, with its metadata fixed in the
-  deploy.
+- **Deployed.** The beacon names the implementation, and the key that deployed it owns it. The implementation is
+  locked: it can't be initialized and holds no metadata or roles. Each token is a proxy of that beacon, with its
+  metadata fixed in the deploy.
 - **Initialized.** `initializeToken` ran in the deploy, seated the deployer as admin and minter and nobody else, and
   can't run again for anyone.
 - **Permissioned.**
@@ -436,18 +438,45 @@ the real addresses once Derive names them.
 
 ## Deploy
 
-**Once per chain** — the implementation and the beacon every token points at:
+**Once per chain** — the implementation and the beacon every token points at. The deploying key owns the beacon,
+and so is the one address that can upgrade every token, until it hands the beacon to Derive (see
+[Hand the beacon to Derive](#hand-the-beacon-to-derive)).
+
+The command names the chain, and the scripts hold each chain's RPC and chain id (`script/Networks.sol`). The RPCs are
+the backend's Alchemy endpoints, so the only inputs are two environment variables, the same two on every chain. A
+deploy, and the [check of what landed](#check-the-deployed-beacon), are two commands:
 
 ```bash
-export DEPLOYER_PRIVATE_KEY=0x...
-export BEACON_OWNER=0x...                          # required; the only address that can upgrade
-forge script script/DeployBeacon.s.sol \
-  --rpc-url $RPC_URL \
-  --broadcast
+export ALCHEMY_KEY=...                 # the backend's Alchemy key (see "Fork test"); never commit it
+export DEPLOYER_PRIVATE_KEY=0x...      # the same key on Sepolia and mainnet: deploys both, and owns the beacon
+
+forge script script/DeployBeacon.s.sol --sig "sepolia()" --broadcast
+forge script script/CheckBeacon.s.sol --sig "sepolia()"
+```
+
+Instead of exporting them, you can put both variables in `.env` (template: `.env.example`), which Foundry loads for every
+`forge` command. `.env` is gitignored; keep it that way.
+
+For Ethereum mainnet, `--sig "mainnet()"`. There is no `--rpc-url`: the script forks the named chain's RPC itself and
+broadcasts there. A command that names no chain fails (`run` is not in the ABI) and sends nothing, and the deploy
+refuses before signing if the RPC answers as any chain but the one named. Forge's own `--chain` flag gives no such
+guard: it broadcasts to whatever chain the RPC is on.
+
+Before the real deploy, rehearse both on a local fork, then dry-run against the chain:
+
+```bash
+# Rehearse. --chain-id 31337 keeps anything signed on the fork invalid on the real chain.
+anvil --fork-url https://eth-sepolia.g.alchemy.com/v2/$ALCHEMY_KEY --chain-id 31337 --port 8546 &
+forge script script/DeployBeacon.s.sol --sig "localFork()" --broadcast
+forge script script/CheckBeacon.s.sol --sig "localFork()"
+
+# Dry run against the real chain: no --broadcast, so nothing is sent.
+forge script script/DeployBeacon.s.sol --sig "sepolia()"
 ```
 
 The `UpgradeableBeacon` address it prints is `BEACON_ADDRESS` below, and what the
-backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`.
+backend is configured with as `DERIVE_CUSTODY_DACAP_BEACON`. Check it before the
+backend is pointed at it, then record it in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
 
 **Per token** — a `BeaconProxy` in front of it:
 
@@ -474,6 +503,34 @@ The deploy is the whole of initialization, so the token is live when the script
 returns, with the deployer key as both admin and minter. Moving either role
 elsewhere is a later `grantRole` then `renounceRole` from that key (see
 [Operating the token](#operating-the-token)).
+
+### Check the deployed beacon
+
+`script/CheckBeacon.s.sol` checks the beacon `DeployBeacon.s.sol` deployed. Run it
+straight after the deploy, naming the same chain, with the same environment:
+
+```bash
+forge script script/CheckBeacon.s.sol --sig "sepolia()"    # or "mainnet()"
+```
+
+It finds the beacon in `DeployBeacon.s.sol`'s record of its last broadcast through
+the same entrypoint, `broadcast/DeployBeacon.s.sol/<chain id>/<entrypoint>-latest.json`.
+A dry run records under `dry-run/`, so it never stands in for a deploy. To check
+another beacon, set `BEACON_ADDRESS`.
+
+It checks that:
+- the beacon is OpenZeppelin's `UpgradeableBeacon`, byte for byte, owned by the
+  deploying key;
+- the implementation is locked, and its code is exactly `abi/StrandsDACAP.json`'s:
+  the artifact the backend's bindings were generated from;
+- a token deployed against the beacon from `abi/BeaconProxy.json`, as the backend
+  deploys one, follows it, has its metadata, seats only its deployer as admin and
+  minter, and can mint at once.
+
+The first failed check stops the run and says what failed. **It sends nothing,
+even with `--broadcast`:** it never starts a broadcast, so the token it deploys
+exists only in forge's local simulation. The key is read only to know which owner
+to expect.
 
 ### Hand the beacon to Derive
 
@@ -509,8 +566,8 @@ The script refuses before signing anything if the key is not the beacon's owner,
 or if the new owner is zero or already the owner. A beacon owned by a multisig
 cannot use it: send `transferOwnership(newOwner)` from the multisig instead.
 
-On a chain with no beacon yet, `DeployBeacon.s.sol` can instead take Derive's
-address as `BEACON_OWNER`, so no transfer is needed.
+`DeployBeacon.s.sol` always makes the deploying key the owner, so this hand-over is
+the only way a beacon reaches Derive.
 
 ## Source verification
 
