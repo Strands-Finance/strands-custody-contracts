@@ -4,13 +4,15 @@ pragma solidity ^0.8.24;
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { BaseTest } from "../Base.t.sol";
 import { StrandsDACAP } from "../../src/StrandsDACAP.sol";
+import { CustodyBalanceMover } from "../../script/CustodyBalanceMover.sol";
 import { MoveCustodyBalances } from "../../script/MoveCustodyBalances.s.sol";
 
-/// @notice The one-time move of a holder's custody tokens into Derive v3's SpotVault. What is pinned is that every
-///         balance lands in the vault with supply unchanged and nothing else touched, and that every refusal comes
-///         before the first send, so a run that refuses leaves every token as it was.
-/// @dev    `move` is called directly with fixture tokens, rather than through `mainnet()` and its constants. Three tokens,
-///         as on mainnet, deployed by `mintAuthority` so it holds both roles, as the backend's key does.
+/// @notice `CustodyBalanceMover.move`, which both balance scripts run. What is pinned is that every balance ends where
+///         the plan says with supply unchanged and nothing else touched, and that every refusal comes before the first
+///         send, so a run that refuses leaves every token as it was.
+/// @dev    `move` is called directly with fixture tokens, rather than through `mainnet()` and its constants;
+///         `ReturnCustodyBalances.t.sol` replays the real plans. Three tokens, as on mainnet, deployed by
+///         `mintAuthority` so it holds both roles, as the backend's key does.
 contract MoveCustodyBalancesTest is BaseTest {
     MoveCustodyBalances internal script;
 
@@ -29,7 +31,6 @@ contract MoveCustodyBalancesTest is BaseTest {
     function setUp() public override {
         super.setUp();
         script = new MoveCustodyBalances();
-        vm.etch(vault, hex"00");
 
         eth = _deployAs(mintAuthority, 18, "Strands.DACAP.BitGo.ETH", "Strands.DACAP.BitGo.ETH");
         usdc = _deployAs(mintAuthority, 6, "Strands.DACAP.BitGo.USDC", "Strands.DACAP.BitGo.USDC");
@@ -42,14 +43,15 @@ contract MoveCustodyBalancesTest is BaseTest {
         vm.stopPrank();
     }
 
-    function _moves() internal view returns (MoveCustodyBalances.Move[] memory moves) {
-        moves = new MoveCustodyBalances.Move[](3);
-        moves[0] = MoveCustodyBalances.Move(eth, ETH_AMOUNT);
-        moves[1] = MoveCustodyBalances.Move(usdc, USDC_AMOUNT);
-        moves[2] = MoveCustodyBalances.Move(usdt, USDT_AMOUNT);
+    /// @dev The holder's whole balance of each token into the vault.
+    function _moves() internal view returns (CustodyBalanceMover.Move[] memory moves) {
+        moves = new CustodyBalanceMover.Move[](3);
+        moves[0] = CustodyBalanceMover.Move(eth, ETH_AMOUNT, 0, ETH_AMOUNT);
+        moves[1] = CustodyBalanceMover.Move(usdc, USDC_AMOUNT, 0, USDC_AMOUNT);
+        moves[2] = CustodyBalanceMover.Move(usdt, USDT_AMOUNT, 0, USDT_AMOUNT);
     }
 
-    function _move(MoveCustodyBalances.Move[] memory moves) internal {
+    function _move(CustodyBalanceMover.Move[] memory moves) internal {
         script.move(moves, holder, vault, mintAuthority, address(beacon), block.chainid);
     }
 
@@ -77,23 +79,39 @@ contract MoveCustodyBalancesTest is BaseTest {
         assertEq(usdt.totalSupply(), USDT_AMOUNT);
     }
 
-    /// @dev The guarded estimates are the supply read at run time, not the holder's balance. With other holders and a
-    ///      vault that already holds the token, the two differ, and the move must still land and touch only the holder.
+    /// @dev Part of a balance, back the other way: the shape of `ReturnCustodyBalances.s.sol`.
+    function test_Move_MovesPartOfABalanceBack() public {
+        _move(_moves());
+        CustodyBalanceMover.Move[] memory back = new CustodyBalanceMover.Move[](1);
+        back[0] = CustodyBalanceMover.Move(usdc, 400e6, USDC_AMOUNT - 400e6, 400e6);
+
+        script.move(back, vault, holder, mintAuthority, address(beacon), block.chainid);
+
+        assertEq(usdc.balanceOf(vault), USDC_AMOUNT - 400e6);
+        assertEq(usdc.balanceOf(holder), 400e6);
+        assertEq(usdc.totalSupply(), USDC_AMOUNT);
+    }
+
+    /// @dev The guarded estimates are the supply read at run time, not the source's balance. With other holders and a
+    ///      destination that already holds the token, the two differ, and the move must still land and touch only the
+    ///      source and the destination.
     function test_Move_LeavesEveryOtherBalanceAlone() public {
         vm.startPrank(mintAuthority);
         usdc.mint(vault, 7);
         usdc.mint(bob, 11);
         vm.stopPrank();
+        CustodyBalanceMover.Move[] memory moves = _moves();
+        moves[1].toAfter = 7 + USDC_AMOUNT;
 
-        _move(_moves());
+        _move(moves);
 
         assertEq(usdc.balanceOf(vault), 7 + USDC_AMOUNT, "the vault's own balance is kept");
         assertEq(usdc.balanceOf(bob), 11, "another holder is untouched");
         assertEq(usdc.totalSupply(), 18 + USDC_AMOUNT);
     }
 
-    /// @dev Each burn is the mint authority's, from the holder, so a reconciler watching `Burned` sees exactly this move.
-    function test_Move_EmitsBurnedFromTheHolder() public {
+    /// @dev Each burn is the mint authority's, from the source, so a reconciler watching `Burned` sees exactly this move.
+    function test_Move_EmitsBurnedFromTheSource() public {
         vm.expectEmit(true, true, false, true, address(eth));
         emit Burned(mintAuthority, holder, ETH_AMOUNT);
         vm.expectEmit(true, true, false, true, address(usdc));
@@ -125,17 +143,35 @@ contract MoveCustodyBalancesTest is BaseTest {
         _assertNothingMoved();
     }
 
-    /// @dev The amounts are pinned to what the console showed, so a balance that moved since is refused, not followed.
-    function test_Move_RefusesAHolderBalanceThatIsNotThePinnedAmount() public {
-        MoveCustodyBalances.Move[] memory moves = _moves();
+    /// @dev The plan pins the source's balance, so a balance that changed since it was written is refused, not
+    ///      followed.
+    function test_Move_RefusesASourceBalanceThePlanDoesNotExpect() public {
+        CustodyBalanceMover.Move[] memory moves = _moves();
         moves[2].amount = USDT_AMOUNT + 1;
+        moves[2].toAfter = USDT_AMOUNT + 1;
 
         vm.expectRevert(
-            bytes("the holder holds 1601005000000 of Strands.DACAP.BitGo.USDT, not the 1601005000001 this run moves")
+            bytes("the source holds 1601005000000 of Strands.DACAP.BitGo.USDT, not the 1601005000001 this run expects")
         );
         _move(moves);
 
         _assertNothingMoved();
+    }
+
+    /// @dev Likewise the destination's: a vault that already holds some of a token would end above the plan.
+    function test_Move_RefusesADestinationBalanceThePlanDoesNotExpect() public {
+        vm.prank(mintAuthority);
+        usdt.mint(vault, 5);
+
+        vm.expectRevert(
+            bytes(
+                "the destination holds 5 of Strands.DACAP.BitGo.USDT, so it would end at 1601005000005, not the planned 1601005000000"
+            )
+        );
+        _move(_moves());
+
+        assertEq(usdt.balanceOf(vault), 5, "the vault keeps only what it had");
+        assertEq(usdt.balanceOf(holder), USDT_AMOUNT, "the holder keeps its USDT token");
     }
 
     function test_Move_RefusesATokenOfAnotherBeacon() public {
@@ -154,17 +190,9 @@ contract MoveCustodyBalancesTest is BaseTest {
         _assertNothingMoved();
     }
 
-    function test_Move_RefusesTheHolderAsTheDestination() public {
-        vm.expectRevert(bytes("the destination is the holder"));
+    function test_Move_RefusesTheSourceAsTheDestination() public {
+        vm.expectRevert(bytes("the destination is the source"));
         script.move(_moves(), holder, holder, mintAuthority, address(beacon), block.chainid);
-
-        _assertNothingMoved();
-    }
-
-    /// @dev The vault is a contract, so a destination with no code is a mistyped address.
-    function test_Move_RefusesADestinationWithNoCode() public {
-        vm.expectRevert(bytes("the destination has no code, so it is not the vault"));
-        script.move(_moves(), holder, makeAddr("wallet"), mintAuthority, address(beacon), block.chainid);
 
         _assertNothingMoved();
     }
